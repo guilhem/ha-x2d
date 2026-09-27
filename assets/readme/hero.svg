@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title description">
+  <title id="title">ha-x2d — a USB bridge toward shutter control</title>
+  <desc id="description">An experimental USB radio gateway. Three separate components connect Home Assistant to a Python client, then over USB to RP2040 firmware and an SPI CC1101 radio. Currently limited to USB and SPI diagnostics; shutter control is not implemented.</desc>
+
+  <rect width="1200" height="420" rx="8" fill="#112329"/>
+
+  <g id="identity" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="56" y="132" fill="#f4f6f4" font-size="108" font-weight="650" letter-spacing="-4">ha-x2d<tspan fill="#70dfcc">.</tspan></text>
+    <text x="60" y="192" fill="#a9b8ba" font-size="34">A USB gateway for Home Assistant.</text>
+    <text x="808" y="74" fill="#70dfcc" font-size="24" font-weight="600" letter-spacing="2">USB / SPI PROTOTYPE</text>
+  </g>
+
+  <g id="shutter-symbol" transform="translate(1006 108)" fill="none" stroke="#70dfcc" stroke-width="3">
+    <path d="M0 82V0h136v82"/>
+    <path d="M12 16h112M12 32h112M12 48h112M12 64h112"/>
+  </g>
+
+  <path d="M56 240h1088" stroke="#496167" stroke-width="1"/>
+
+  <g id="components" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <g id="home-assistant">
+      <text x="56" y="314" fill="#f4f6f4" font-size="40" font-weight="600">Home Assistant</text>
+      <text x="58" y="361" fill="#a9b8ba" font-size="26">Setup &amp; diagnostics</text>
+    </g>
+    <g id="python-client">
+      <text x="460" y="314" fill="#f4f6f4" font-size="40" font-weight="600">Python</text>
+      <text x="462" y="361" fill="#a9b8ba" font-size="26">Independent client</text>
+    </g>
+    <g id="rp2040-firmware">
+      <text x="860" y="314" fill="#f4f6f4" font-size="40" font-weight="600">RP2040</text>
+      <text x="862" y="361" fill="#a9b8ba" font-size="26">Firmware + CC1101</text>
+    </g>
+  </g>
+
+  <g id="connections" fill="none" stroke="#70dfcc" stroke-width="2">
+    <path d="M366 300h62m-7-6 7 6-7 6m-48-12-7 6 7 6"/>
+    <path d="M724 300h100m-7-6 7 6-7 6m-86-12-7 6 7 6"/>
+  </g>
+  <text x="749" y="281" fill="#70dfcc" font-family="ui-monospace, 'SFMono-Regular', Menlo, monospace" font-size="24">USB</text>
+</svg>
