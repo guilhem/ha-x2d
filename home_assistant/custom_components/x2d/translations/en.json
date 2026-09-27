@@ -1,0 +1,52 @@
+{
+  "title": "X2D USB Gateway",
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Connect the USB gateway",
+        "description": "Select the YD-RP2040 running ha-x2d firmware. This first version provides gateway and CC1101 diagnostics.",
+        "data": {
+          "device": "Serial port"
+        }
+      },
+      "usb_confirm": {
+        "title": "Set up the detected gateway",
+        "description": "Connect to this USB gateway and enable its diagnostics?"
+      },
+      "reconfigure": {
+        "title": "Change the serial port",
+        "description": "Select the new port for the same physical gateway.",
+        "data": {
+          "device": "Serial port"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot communicate with this port. Check the USB connection and that another application does not own it.",
+      "invalid_gateway": "The device identity or firmware protocol is incompatible."
+    },
+    "abort": {
+      "already_configured": "This gateway is already configured.",
+      "invalid_gateway": "The USB device does not identify a supported gateway.",
+      "reconfigure_successful": "The serial port was updated."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "radio_status": {
+        "name": "CC1101 status",
+        "state": {
+          "not_detected": "Not detected",
+          "idle": "Idle",
+          "detected": "Detected"
+        }
+      }
+    },
+    "binary_sensor": {
+      "connectivity": {
+        "name": "USB connection"
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+.build/
+dist/
+
+# Local development state; keep devenv.lock and uv.lock versioned.
+.devenv/
+devenv.local.nix
+devenv.local.yaml
+.direnv/

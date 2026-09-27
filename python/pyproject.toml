@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "x2d-gateway"
+version = "0.1.0"
+description = "Async USB client for the ha-x2d experimental radio gateway"
+requires-python = ">=3.11"
+dependencies = ["serialx>=1.10.0,<2"]
+
+[project.scripts]
+x2d-gateway = "x2d_gateway.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,13 @@
+{
+  "domain": "x2d",
+  "name": "X2D USB Gateway",
+  "version": "0.1.0",
+  "config_flow": true,
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "dependencies": ["usb"],
+  "requirements": ["serialx==1.10.0"],
+  "usb": [
+    {"vid": "2E8A", "pid": "800A", "manufacturer": "ha-x2d", "description": "ha-x2d gateway*"}
+  ]
+}

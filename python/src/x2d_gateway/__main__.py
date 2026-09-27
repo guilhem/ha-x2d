@@ -1,0 +1,29 @@
+"""Read-only diagnostic CLI: python -m x2d_gateway /dev/serial/by-id/…"""
+
+import argparse
+import asyncio
+import json
+
+from . import Gateway
+
+
+async def inspect(device: str) -> None:
+    gateway = await Gateway.open(device)
+    try:
+        print(json.dumps({"info": gateway.info, "status": await gateway.status()}, indent=2))
+    finally:
+        await gateway.close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("device", help="USB serial port (one owner at a time)")
+    args = parser.parse_args()
+    try:
+        asyncio.run(inspect(args.device))
+    except (OSError, TimeoutError, ValueError) as exc:
+        parser.exit(1, f"Gateway unavailable: {exc}\n")
+
+
+if __name__ == "__main__":
+    main()
