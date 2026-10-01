@@ -108,7 +108,8 @@
         "shutter_unavailable": "Le volet ou la connexion n’est pas prêt pour une commande. Aucune tentative de reconnexion ni aucun rejeu de commande n’est effectué ici."
       },
       "abort": {
-        "no_slots": "Les 16 emplacements sont référencés. Supprimer une entité ne réinitialise pas un contrôleur.",
+        "no_slots": "Tous les emplacements de cette passerelle sont déjà configurés.",
+        "enrollment_unavailable": "Le firmware installé ne permet pas encore d’ajouter un nouveau volet. Les volets déjà configurés restent utilisables.",
         "already_configured": "Cet emplacement est déjà configuré.",
         "generation_changed": "Le stockage de la passerelle a changé. L’ancienne référence du volet ne peut pas être réutilisée.",
         "storage_corrupt": "Le stockage est corrompu. Aucune réinitialisation ni aucun formatage automatique.",

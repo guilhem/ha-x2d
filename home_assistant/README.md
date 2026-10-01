@@ -102,6 +102,9 @@ Avec le firmware **0.3.0-commands**, seuls les slots déjà associés dans la cl
 sont proposés. Choisir le slot de C et son nom conduit directement au test,
 sans `provision`, `pair` ou `confirm`. La clé conserve son identité, sa génération
 et ses compteurs. Ce firmware ne permet pas encore d’inscrire un autre volet.
+Lorsque ses volets associés sont déjà ajoutés à HA, le bouton d’ajout explique
+que l’association d’un nouveau volet n’est pas disponible avec le firmware
+installé ; il ne signale pas à tort que les 16 emplacements sont occupés.
 
 Ces consignes physiques ne valident pas le profil radio du firmware.
 Si le firmware annonce seulement `status` et `shutters`, le flux refuse de

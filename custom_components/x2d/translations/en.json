@@ -108,7 +108,8 @@
         "shutter_unavailable": "The shutter or connection is not ready for a command. This action does not reconnect or replay commands."
       },
       "abort": {
-        "no_slots": "All 16 slots are referenced. Removing an entity does not reset a controller.",
+        "no_slots": "All shutter slots on this gateway are already configured.",
+        "enrollment_unavailable": "The installed firmware does not yet support adding a new shutter. You can continue using your configured shutters.",
         "already_configured": "This slot is already configured.",
         "generation_changed": "Gateway storage has changed. The old shutter reference cannot be reused.",
         "storage_corrupt": "Gateway storage is corrupt. No automatic reset or formatting is performed.",

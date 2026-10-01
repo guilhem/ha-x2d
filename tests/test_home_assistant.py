@@ -156,6 +156,7 @@ class HomeAssistantChecks(unittest.IsolatedAsyncioTestCase):
                             self.assertIn(detail, instructions)
                         localized = json.loads((component / f"translations/{language}.json").read_text())
                         steps = localized["config_subentries"]["shutter"]["step"]
+                        self.assertTrue(localized["config_subentries"]["shutter"]["abort"]["enrollment_unavailable"])
                         self.assertIn("{instructions}", steps["enroll"]["description"])
                         self.assertIn("C", steps["confirm"]["data"]["motor_response"])
 
@@ -180,6 +181,21 @@ class HomeAssistantChecks(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(any(r["op"] == "provision" for r in peer.requests[start:]))
                     peer.info["capabilities"] = original_caps
                     peer.status["tx_enabled"] = True
+                    await coordinator.gateway.close()
+                    await coordinator.async_refresh()
+
+                    # A commands-only key without a paired controller cannot
+                    # enroll one, rather than having exhausted all its slots.
+                    peer.info["capabilities"] = ["status", "shutters", "command"]
+                    await coordinator.gateway.close()
+                    await coordinator.async_refresh()
+                    start = len(peer.requests)
+                    result = await manager.async_init((entry.entry_id, "shutter"), context={"source": "user"})
+                    self.assertEqual(result["reason"], "enrollment_unavailable")
+                    self.assertEqual(peer.shutters, {})
+                    self.assertFalse(any(r["op"] in {"provision", "pair", "confirm", "command"}
+                                         for r in peer.requests[start:]))
+                    peer.info["capabilities"] = original_caps
                     await coordinator.gateway.close()
                     await coordinator.async_refresh()
 
@@ -259,6 +275,28 @@ class HomeAssistantChecks(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(stale["reason"], "already_configured")
                     self.assertEqual(len(peer.requests), start)
                     self.assertEqual(len(entry.subentries), 1)
+
+                    # One paired controller already adopted on a 16-slot
+                    # commands-only key does not mean that 16 slots are used.
+                    peer.info["capabilities"] = ["status", "shutters", "command"]
+                    await coordinator.gateway.close()
+                    await coordinator.async_refresh()
+                    before = deepcopy(peer.shutters)
+                    start = len(peer.requests)
+                    result = await manager.async_init((entry.entry_id, "shutter"), context={"source": "user"})
+                    self.assertEqual(result["reason"], "enrollment_unavailable")
+                    self.assertEqual(peer.shutters, before)
+                    self.assertFalse(any(r["op"] in {"provision", "pair", "confirm", "command"}
+                                         for r in peer.requests[start:]))
+
+                    # Keep the capacity error for firmware that can enroll
+                    # controllers when every slot is actually configured.
+                    peer.info["capabilities"] = original_caps
+                    await coordinator.gateway.close()
+                    await coordinator.async_refresh()
+                    with patch.object(flow_module.ShutterFlow, "_used", return_value=set(range(1, 17))):
+                        result = await manager.async_init((entry.entry_id, "shutter"), context={"source": "user"})
+                    self.assertEqual(result["reason"], "no_slots")
                     pending = await add_shutter(2, "Bedroom")
                     result = await manager.async_configure(pending["flow_id"], {"physical_ready": True})
                     result = await manager.async_configure(result["flow_id"], {"motor_response": True})

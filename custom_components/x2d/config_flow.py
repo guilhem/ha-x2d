@@ -172,7 +172,7 @@ class ShutterFlow(ConfigSubentryFlow):
             capabilities = coordinator.info["capabilities"]
             can_provision = "provision" in capabilities
             paired = {s["shutter_id"]: s for s in data["shutters"] if s["state"] == "paired"}
-            if not can_provision and ("command" not in capabilities or not paired):
+            if not can_provision and "command" not in capabilities:
                 return self.async_abort(reason="profile_unverified")
             if data["storage"]["state"] in ("corrupt", "full"):
                 return self.async_abort(reason=f"storage_{data['storage']['state']}")
@@ -180,7 +180,9 @@ class ShutterFlow(ConfigSubentryFlow):
             available = [slot for slot in range(1, coordinator.info["max_shutters"] + 1)
                          if slot not in used and (can_provision or slot in paired)]
             if not available:
-                return self.async_abort(reason="no_slots")
+                return self.async_abort(
+                    reason="no_slots" if can_provision else "enrollment_unavailable"
+                )
             if user_input is not None:
                 slot = user_input["shutter_id"]
                 if type(slot) is not int or slot not in available:
