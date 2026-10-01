@@ -1,0 +1,27 @@
+{
+  "domain": "x2d",
+  "name": "X2D USB Gateway",
+  "version": "0.3.0",
+  "documentation": "https://github.com/guilhem/ha-x2d/blob/main/home_assistant/README.md",
+  "issue_tracker": "https://github.com/guilhem/ha-x2d/issues",
+  "codeowners": [
+    "@guilhem"
+  ],
+  "config_flow": true,
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "dependencies": [
+    "usb"
+  ],
+  "requirements": [
+    "serialx==1.10.0"
+  ],
+  "usb": [
+    {
+      "vid": "2E8A",
+      "pid": "800A",
+      "manufacturer": "ha-x2d",
+      "description": "ha-x2d gateway*"
+    }
+  ]
+}

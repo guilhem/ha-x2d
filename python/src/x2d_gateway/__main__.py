@@ -4,13 +4,13 @@ import argparse
 import asyncio
 import json
 
-from . import Gateway
+from . import Gateway, GatewayError
 
 
 async def inspect(device: str) -> None:
     gateway = await Gateway.open(device)
     try:
-        print(json.dumps({"info": gateway.info, "status": await gateway.status()}, indent=2))
+        print(json.dumps({"info": gateway.info, "status": await gateway.status(), "shutters": await gateway.shutters()}, indent=2))
     finally:
         await gateway.close()
 
@@ -21,7 +21,7 @@ def main() -> None:
     args = parser.parse_args()
     try:
         asyncio.run(inspect(args.device))
-    except (OSError, TimeoutError, ValueError) as exc:
+    except (OSError, TimeoutError, ValueError, GatewayError) as exc:
         parser.exit(1, f"Gateway unavailable: {exc}\n")
 
 

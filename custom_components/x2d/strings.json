@@ -1,0 +1,129 @@
+{
+  "title": "X2D USB Gateway",
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Connect the USB gateway",
+        "description": "Select the ha-x2d USB gateway. Add each shutter separately afterwards.",
+        "data": {
+          "device": "Serial port"
+        }
+      },
+      "usb_confirm": {
+        "title": "Set up the detected gateway",
+        "description": "Connect this USB gateway shared by shutters and diagnostics?"
+      },
+      "reconfigure": {
+        "title": "Change the serial port",
+        "description": "Select the new port for the same physical gateway.",
+        "data": {
+          "device": "Serial port"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot communicate with this port. Check the USB connection and that another application does not own it.",
+      "invalid_gateway": "The device identity or firmware protocol is incompatible."
+    },
+    "abort": {
+      "already_configured": "This gateway is already configured.",
+      "invalid_gateway": "The USB device does not identify a supported gateway.",
+      "reconfigure_successful": "The serial port was updated."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "radio_status": {
+        "name": "CC1101 status",
+        "state": {
+          "not_detected": "Not detected",
+          "idle": "Idle",
+          "detected": "Detected"
+        }
+      }
+    },
+    "binary_sensor": {
+      "connectivity": {
+        "name": "USB connection"
+      }
+    }
+  },
+  "config_subentries": {
+    "shutter": {
+      "title": "Shutter",
+      "step": {
+        "user": {
+          "title": "Add a shutter",
+          "description": "Choose a stable slot. Reuse the same slot after an interrupted enrollment to retain its identity. These instructions cover only the observed Franciasoft / Well'com motor with its original BASE controller. Do not reset the motor.",
+          "data": {
+            "name": "Shutter name",
+            "shutter_id": "Slot (1–16)"
+          }
+        },
+        "enroll": {
+          "title": "Put the shutter into pairing mode",
+          "description": "{instructions}\n\nHome Assistant only enrolls the new identity C; your physical controller opens association mode manually.",
+          "data": {
+            "physical_ready": "I observed the mechanical acknowledgment and released STOP; less than 1 minute has elapsed"
+          }
+        },
+        "confirm": {
+          "title": "Confirm the motor response",
+          "description": "The gateway sent the enrollment request for its new identity C. Confirm only after observing the subsequent mechanical acknowledgment from the motor. The gateway cannot observe it or know the motor position.",
+          "data": {
+            "motor_response": "I observed the motor's mechanical acknowledgment after enrolling C"
+          }
+        },
+        "test": {
+          "title": "Test the paired shutter",
+          "description": "Pairing is persisted on the gateway. Explicitly choose a test command while watching the shutter. This form sends nothing until you submit; interrupted commands are never replayed.",
+          "data": {
+            "action": "Test command"
+          }
+        },
+        "test_confirm": {
+          "title": "Confirm the test result",
+          "description": "The gateway emitted the command. Confirm only if you observed the expected result on the shutter. Select “Test another command” to choose another action; that choice sends nothing by itself.",
+          "data": {
+            "test_observed": "I observed the expected result",
+            "test_again": "Test another command"
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "Gateway unavailable. Check USB and retry explicitly; no RF command is replayed.",
+        "invalid_gateway": "The gateway protocol or identity is incompatible.",
+        "profile_unverified": "RF enrollment and transmission have not been verified on real captures. Firmware refuses this operation; no motor success is inferred.",
+        "instructions_unavailable": "Documented motor enrollment instructions are not available yet. No enrollment is transmitted.",
+        "physical_ready_required": "Confirm that you have put the shutter into pairing mode with your existing controller.",
+        "motor_response_required": "Confirm the observed motor response. An RF burst alone does not prove enrollment.",
+        "storage_corrupt": "Gateway storage is corrupt. No automatic reset or formatting is performed.",
+        "storage_full": "Gateway storage is full; this operation cannot be persisted.",
+        "counter_exhausted": "The controller counter is exhausted. No RF command was sent.",
+        "not_paired": "This shutter is still pending motor confirmation.",
+        "command_uncertain": "RF completion is unknown. Check the motor before explicitly retrying; the operation is not replayed.",
+        "tx_failed": "The gateway rejected or did not complete the RF operation. This transmission does not confirm a motor result.",
+        "test_observed_required": "Confirm the observed result or choose another test command. RF emission alone does not prove shutter movement.",
+        "shutter_unavailable": "The shutter or connection is not ready for a command. This action does not reconnect or replay commands."
+      },
+      "abort": {
+        "no_slots": "All 16 slots are referenced. Removing an entity does not reset a controller.",
+        "already_configured": "This slot is already configured.",
+        "generation_changed": "Gateway storage has changed. The old shutter reference cannot be reused.",
+        "storage_corrupt": "Gateway storage is corrupt. No automatic reset or formatting is performed.",
+        "storage_full": "Gateway storage is full; this operation cannot be persisted.",
+        "profile_unverified": "The initial controller identity and counter have not been verified. Firmware refuses provisioning; no shutter or storage state is created."
+      }
+    }
+  },
+  "selector": {
+    "shutter_action": {
+      "options": {
+        "open": "Open",
+        "stop": "Stop",
+        "close": "Close"
+      }
+    }
+  }
+}

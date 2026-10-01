@@ -1,12 +1,12 @@
-"""Export state without USB paths, persistent IDs or boot session identifiers."""
+"""No USB paths, radio identities/counters, sessions or journal identifiers."""
 
 from homeassistant.components.diagnostics import async_redact_data
 
 
 async def async_get_config_entry_diagnostics(hass, entry) -> dict:
     coordinator = entry.runtime_data
-    return {
+    return async_redact_data({
         "connected": coordinator.last_update_success,
-        "info": async_redact_data(coordinator.info, {"device_id", "session"}),
+        "info": coordinator.info,
         "status": coordinator.data,
-    }
+    }, {"device_id", "session", "generation", "identity", "counter"})

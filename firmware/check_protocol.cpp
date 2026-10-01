@@ -1,86 +1,67 @@
-#include "ha_x2d/protocol.h"
-
 #include <assert.h>
-#include <string.h>
-
+#include <string>
+#include <vector>
+#include "ha_x2d/tx_queue.h"
+using namespace ha_x2d;
+Request parse(const std::string& s) { return decode(s.data(), s.size()); }
 int main() {
-  ha_x2d::LineFramer framer;
-  const char* hello = "{\"v\":1,\"id\":7,\"op\":\"hello\"}\r\n";
-  ha_x2d::LineFramer::Event event = ha_x2d::LineFramer::Event::none;
-  for (const char* p = hello; *p; ++p) event = framer.feed(*p);
-  assert(event == ha_x2d::LineFramer::Event::line);
-  auto request = ha_x2d::decode(framer.data(), framer.length);
-  assert(request.error == nullptr && request.id == 7 &&
-         request.op == ha_x2d::Operation::hello);
-  char reply[ha_x2d::MAX_LINE_BYTES];
-  size_t length = ha_x2d::encode(request, "0123456789ABCDEF", "FEDCBA9876543210",
-                                 0, {}, reply, sizeof(reply));
-  assert(length > 0 && length <= ha_x2d::MAX_LINE_BYTES && reply[length - 1] == '\n');
-  JsonDocument doc;
-  assert(!deserializeJson(doc, reply, length - 1));
-  assert(doc["result"]["capabilities"].size() == 3);
-  assert(doc["result"]["device_id"] == "0123456789ABCDEF");
-
-  const char* invalid[] = {
-      "{\"v\":1,\"id\":true,\"op\":\"hello\"}",
-      "{\"v\":1,\"id\":1.5,\"op\":\"hello\"}",
-      "{\"v\":1,\"id\":0,\"op\":\"hello\"}",
-      "{\"v\":1,\"id\":2147483648,\"op\":\"hello\"}",
-      "{\"v\":1,\"id\":1,\"op\":\"hello\",\"extra\":0}",
-      "{\"v\":1,\"id\":1,\"op\":\"hello\",\"op\":\"status\"}",
-      "{v:1,id:2,op:'status'}",
-      "{'v':1,'id':2,'op':'status'}",
-      "{\"v\":1,\"id\":2,\"op\":'status'}",
-      "{\"v\":1,\"id\":+2,\"op\":\"status\"}",
-      "{\"v\":1,\"id\":02,\"op\":\"status\"}",
-      "{\"v\":1,\"id\":1,\"op\":\"hello\\u0000tx\"}",
-      "{\"v\":1,\"id\":1,\"op\\u0000tx\":\"hello\"}",
-      "{\"v\\u0000tx\":1,\"id\":1,\"op\":\"hello\"}",
-      "{\"v\":1,\"id\\u0000tx\":1,\"op\":\"hello\"}",
-      "{\"v\":1,\"id\":1,\"op\":\"hello\"} trailing",
-      "{\"v\":1,\"id\":1,\"op\":\"hello\"}{\"v\":1}",
-      "{\"v\":1,\"id\":1,\"op\":\"hello\"",
-      "[1,2,3]",
-      "{\"v\":1,\"id\":1,\"op\":{\"deep\":[]}}",
-  };
-  for (const char* value : invalid)
-    assert(ha_x2d::decode(value, strlen(value)).error != nullptr);
-
-  const char* unsupported = "{\"v\":1,\"id\":9,\"op\":\"tx\"}";
-  request = ha_x2d::decode(unsupported, strlen(unsupported));
-  assert(request.has_id && request.id == 9 &&
-         strcmp(request.error, "unsupported_operation") == 0);
-
-  const char* status = "{\"v\":1,\"id\":8,\"op\":\"status\"}";
-  request = ha_x2d::decode(status, strlen(status));
-  assert(request.error == nullptr && request.op == ha_x2d::Operation::status);
-  length = ha_x2d::encode(request, "0123456789ABCDEF", "FEDCBA9876543210",
-                          UINT32_MAX, {}, reply, sizeof(reply));
-  assert(!deserializeJson(doc, reply, length - 1));
-  assert(doc["result"]["radio"]["detected"] == false);
-  assert(doc["result"]["radio"]["partnum"].isNull());
-  assert(doc["result"]["tx_enabled"] == false);
-
-  ha_x2d::RadioStatus present{true, 0, 0x14, 1};
-  length = ha_x2d::encode(request, "0123456789ABCDEF", "FEDCBA9876543210",
-                          1, present, reply, sizeof(reply));
-  assert(!deserializeJson(doc, reply, length - 1));
-  assert(doc["result"]["radio"]["detected"] == true);
-  assert(doc["result"]["radio"]["version"] == 0x14);
-
-  framer.reset();
-  for (size_t i = 0; i < 512; ++i) assert(framer.feed('x') == ha_x2d::LineFramer::Event::none);
-  assert(framer.feed('\n') == ha_x2d::LineFramer::Event::too_long);
-  for (const char* p = hello; *p; ++p) event = framer.feed(*p);
-  assert(event == ha_x2d::LineFramer::Event::line);
-  assert(ha_x2d::decode(framer.data(), framer.length).error == nullptr);
-  framer.reset();
-  for (size_t i = 0; i < 511; ++i) assert(framer.feed(' ') == ha_x2d::LineFramer::Event::none);
-  assert(framer.feed('\n') == ha_x2d::LineFramer::Event::line);
-  assert(framer.length == 511);
-  framer.reset();
-  assert(framer.feed('{') == ha_x2d::LineFramer::Event::none);
-  framer.reset();  // USB disconnect drops an incomplete request.
-  for (const char* p = hello; *p; ++p) event = framer.feed(*p);
-  assert(ha_x2d::decode(framer.data(), framer.length).error == nullptr);
+  OutputBuffer output;
+  const std::string fill(OutputBuffer::CAPACITY - 3, 'x');
+  assert(output.append(fill.data(), fill.size()));
+  assert(!output.append("abcd", 4));
+  assert(output.size() == fill.size());
+  output.consume(OutputBuffer::CAPACITY - 5);
+  assert(output.append("hello\n", 6));
+  std::string drained;
+  while (output.size()) {
+    const size_t count = output.contiguous() < 2 ? output.contiguous() : 2;
+    drained.append(output.data(), count);
+    output.consume(count);
+  }
+  assert(drained == "xxhello\n");
+  assert(output.append("old\n", 4));
+  output.clear();
+  assert(output.size() == 0 && !output.append(nullptr, 1));
+  assert(parse(R"({"v":2,"id":1,"op":"hello"})").op == Operation::hello);
+  const std::string prefix = R"({"v":2,"id":2,"session":"0123456789ABCDEF","op":)";
+  assert(parse(prefix + R"("command","args":{"shutter_id":1,"action":"stop"}})").action == Action::stop);
+  for (const std::string& s : std::vector<std::string>{
+      R"({"v":1,"id":1,"op":"hello"})", R"({"v":true,"id":1,"op":"hello"})",
+      R"({"v":2,"id":true,"op":"hello"})", R"({"v":2,"id":1,"op":"hello","op":"hello"})",
+      R"({'v':2,'id':1,'op':'hello'})", R"({v:2,id:1,op:"hello"})",
+      R"({"v":2,"id":01,"op":"hello"})", R"({"v":2,"id":1,"op":"hello"} {})",
+      prefix + R"("command","args":{"shutter_id":1,"shutter_id":2,"action":"stop"}})",
+      prefix + R"("command","args":{"shutter_id":0,"action":"stop"}})",
+      prefix + R"("command","args":{"shutter_id":17,"action":"stop"}})",
+      prefix + R"("command","args":{"shutter_id":1,"action":"pair"}})",
+      prefix + R"("status","args":{"x":1}})"}) assert(parse(s).error);
+  LineFramer framer;
+  for (size_t i = 0; i < MAX_LINE_BYTES; ++i) assert(framer.feed('x') == LineFramer::Event::none);
+  assert(framer.feed('\n') == LineFramer::Event::too_long);
+  for (char c : std::string("hello\r")) framer.feed(c);
+  assert(framer.feed('\n') == LineFramer::Event::line && framer.length == 5);
+  TxQueue queue;
+  std::vector<std::string> outcomes;
+  auto report = [&](const TxJob&, const char* value) { outcomes.emplace_back(value); };
+  assert(queue.push({1,0,1,Action::open,false},100,report));
+  assert(queue.push({2,0,2,Action::close,false},100,report));
+  assert(queue.push({3,0,1,Action::stop,false},101,report));
+  assert(outcomes.size() == 1 && outcomes[0] == "cancelled");
+  TxJob job;
+  assert(queue.pop(101,job,report) && job.request_id == 3);
+  assert(queue.pop(101,job,report) && job.request_id == 2);
+  assert(!queue.pop(101,job,report));
+  assert(queue.push({4,0,1,Action::open,false},0xfffffff0u,report));
+  assert(!queue.pop(0xfffffff0u + TxQueue::TTL_MS,job,report));
+  assert(outcomes.back() == "expired");
+  for (size_t i = 0; i < TxQueue::CAPACITY; ++i)
+    assert(queue.push({static_cast<uint32_t>(i+5),0,2,Action::close,false},10,report));
+  assert(!queue.push({30,0,3,Action::open,false},10,report));
+  assert(queue.push({31,0,3,Action::stop,false},10,report));
+  assert(queue.pop(10,job,report) && job.request_id == 31);
+  queue.clear(report); assert(!queue.size());
+  for (uint8_t i = 1; i <= MAX_SHUTTERS; ++i)
+    assert(queue.push({static_cast<uint32_t>(31+i),0,i,Action::stop,false},10,report));
+  assert(queue.push({50,0,1,Action::stop,false},10,report));
+  assert(queue.size() == TxQueue::CAPACITY);
 }
