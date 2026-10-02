@@ -62,7 +62,7 @@ avec réglages RX [DN022](https://www.ti.com/lit/an/swra215e/swra215e.pdf) et
 profils candidats examinés indépendamment. RSSI ≈ brut signé / 2 − 74 dBm,
 non calibré. Les 47 registres de configuration sont relus dans chaque état.
 
-**Protocole debug distinct du contrat USB v2 ci-dessous** : commandes ASCII
+**Protocole debug distinct de la passerelle MySensors ci-dessous** : commandes ASCII
 `status`, `stop`, `rx fsk 868350000 38086`, `rx ook 868439941 0`, suivies de LF
 (CRLF accepté, **512 octets LF compris**, une commande à la fois). Le firmware
 émet spontanément du JSONL, **4096 octets LF compris**, avec `debug:1`, `type`
@@ -160,23 +160,22 @@ l'association et la commande effective d'un volet restent à tester.
 ## MySensors USB gateway — experimental RF
 
 [ha_x2d/ha_x2d.ino](ha_x2d/ha_x2d.ino) uses the native MySensors 2.x serial
-protocol at 115200 baud. Read the [migration guide](../home_assistant/README.md)
-before upgrading a JSONL dongle. The gateway no longer needs ArduinoJson; the
-separate passive RX sketch still does.
+protocol at 115200 baud. Follow the [Home Assistant guide](../home_assistant/README.md)
+to install the dongle and associate shutters.
 
 ```sh
 git submodule update --init --recursive
 devenv shell
 devenv test
 devenv tasks run firmware:build
-# For previously paired shutters, with RF deliberately enabled:
+# Normal shutter commands after supervised pairing:
 devenv tasks run firmware:commands-build
 ```
 
 Outputs are `dist/ha_x2d-0.4.0-yd-rp2040-4mb-UNQUALIFIED-RADIO.uf2` (RF off) and
 `dist/ha_x2d-0.4.0-yd-rp2040-4mb-COMMANDS-ONLY-UNQUALIFIED-RADIO.uf2`.
-No build task flashes hardware. The commands-only build enables existing paired
-identities and refuses new association/confirmation.
+No build task flashes hardware. The commands-only build enables open, close and
+STOP for paired shutters and refuses new association/confirmation.
 
 The **yd-rp2040-4mb-journal** profile fixes Arduino-Pico **6.1.1** and the physical
 4 MiB board's linker reservation. Its raw **64 KiB** journal starts at
@@ -199,8 +198,7 @@ The PIO/DMA burst remains continuous, with a single preamble and preserved phase
 STOP ends it at a complete frame boundary. The nominal chip duration stays
 **208500 ns** in `radio_tx.h` (`DEFAULT_CHIP_NS`); retain and calibrate this value
 when qualifying hardware. The CC1101 candidate profile remains async OOK at
-868.350 MHz, with register checks before transmission. No radio changes are
-implied by switching the USB protocol.
+868.350 MHz, with register checks before transmission.
 
 On USB loss, pending input/output and requests are discarded. The active burst
 stops at its frame boundary and reservations remain consumed. The loop reads
@@ -225,9 +223,8 @@ No motor response means no confirmation. Only human observation authorizes ON
 of child 18, after the radio is idle; the cover then appears without restarting.
 Confirmation can resume after power loss in the same authorized trial build.
 
-Historical C enrollment and motor observations remain in
-[OBSERVATIONS_RADIO.md](../docs/OBSERVATIONS_RADIO.md); this migration does not
-extend that qualification. Initial association, reset/watchdog carrier-off,
+See [OBSERVATIONS_RADIO.md](../docs/OBSERVATIONS_RADIO.md) for radio captures.
+Initial association, reset/watchdog carrier-off,
 USB unplugging and STOP latency must be measured with this firmware on hardware.
 Use a 10 kΩ GDO0 pull-down to keep the data input low during reset and verify the
 actual carrier-off behavior; firmware reinitializes the CC1101 at startup.

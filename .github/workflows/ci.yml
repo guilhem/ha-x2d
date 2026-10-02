@@ -77,7 +77,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: guilhem/esphome-x2d
-          ref: 28aa925bdaaa0196f4eacc39588edc33f9c975c9
+          ref: dac9c7b020738d9f4b834bc3f99d72c4511198a1
           path: build/esphome-x2d
       - uses: actions/setup-python@v5
         with:

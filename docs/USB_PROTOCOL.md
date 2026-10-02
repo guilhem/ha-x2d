@@ -1,10 +1,10 @@
 # USB: MySensors 2.x
 
 The gateway firmware speaks only the standard MySensors serial protocol at
-115200 baud. JSONL v2 and the Python/HACS client were removed.
+115200 baud.
 
-The [core serial contract](https://github.com/guilhem/x2d-core/blob/1058d66be06f653026213301357d30bbc150c11d/docs/MYSENSORS.md)
-is authoritative. See the [HA migration guide](../home_assistant/README.md) for
+The [core serial contract](https://github.com/guilhem/x2d-core/blob/bc843047ab44ddf081a2abf63661e9f2e0b89bfd/docs/MYSENSORS.md)
+is authoritative. See the [Home Assistant guide](../home_assistant/README.md) for
 installation, the global assumed-state rule, pairing and reset restrictions.
 
 The passive RX diagnostic sketch retains its separate JSONL capture format;

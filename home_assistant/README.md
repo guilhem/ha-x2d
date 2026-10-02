@@ -4,23 +4,18 @@ Use Home Assistant Core **2026.9.4**, MySensors protocol **2.3**, and
 **115200 baud**. Install the built-in integration; there is no custom component
 or container to install. Only one process may own the USB serial port.
 
-## Migrate from HACS / JSONL
+## Install
 
-1. Back up HA. Record existing shutter names, entity IDs, dashboards and
-   automation references. Disable automations that could move the shutters
-   during migration and stop the existing X2D integration's serial connection.
-2. Remove its config entry, then remove X2D Gateway from HACS. For a manual
-   installation, remove `custom_components/x2d`. Restart HA to unload the old
-   client. This only affects HA; it does not erase the dongle journal.
-3. Build the **4 MiB journal profile** and run `check_uf2_layout.py` on the exact
+1. Wire the YD-RP2040 and CC1101 as described in the [firmware guide](../firmware/README.md#wiring).
+   Build the **4 MiB journal profile** and run `check_uf2_layout.py` on the exact
    UF2 you will flash, as described in the [firmware guide](../firmware/README.md).
    Use BOOTSEL to copy that UF2. **Never use flash_nuke, erase the whole flash,
    mount LittleFS over the journal, or change the linker layout.**
-4. Add the native **MySensors → Serial** integration using
+2. Connect the dongle to the Home Assistant host and add the native
+   **MySensors → Serial** integration using
    `/dev/serial/by-id/…`, **115200**, **2.3**. Preserve this MySensors entry and
-   its persistence when updating firmware. The dongle keeps its existing USB
-   manufacturer, product, serial number and flash journal address.
-5. Merge this single rule into `configuration.yaml`, then reload Home Assistant
+   its persistence when updating firmware.
+3. Merge this single rule into `configuration.yaml`, then reload Home Assistant
    customizations or restart HA:
 
    ```yaml
@@ -31,15 +26,14 @@ or container to install. Only one process may own the USB serial port.
          device_class: shutter
    ```
 
-6. Wait for the associated covers to appear. Restore their display names and
-   update dashboards and automations to the **new** MySensors entities. Keep
-   the `cover.x2d_` entity-ID prefix so the customization still matches.
-   Test open, close and STOP under supervision before restoring automations.
+4. Follow the pairing procedure below. Each confirmed shutter appears
+   automatically; no per-shutter YAML is needed. Choose its display name and
+   add it to dashboards or automations. Keep the `cover.x2d_` entity-ID prefix
+   so the customization still matches.
 
-Existing radio identities and consumed counters remain in the dongle. **A
-normal migration needs no new motor pairing.** The default UF2 refuses RF;
-use the explicitly enabled commands-only build for previously paired slots.
-The MySensors adapter does not understand the former JSONL client.
+The default UF2 refuses RF while hardware qualification is pending. A supervised
+trial build enables the pairing procedure; after pairing, the commands-only
+build supports normal open, close and STOP operations.
 
 ## Entities and pairing
 
@@ -123,11 +117,8 @@ by the dongle. Restoring an old HA backup never restores radio counters.
 
 ## Hardware qualification
 
-Historical evidence covers one YD-RP2040 (4 MiB) / CC1101 and one Well’com motor
-with the former JSONL firmware: USB/SPI, digital PIO burst checks, passive radio
-captures and supervised open/close/STOP. Original remotes remained operational.
-
-The MySensors release must be separately qualified on HA OS with the actual
+Qualification is pending for this firmware on HA OS with a YD-RP2040 (4 MiB),
+CC1101 and Well’com motor. Test on the actual
 board: journal-preserving update; unchanged identities and counter monotonicity;
 open/close/STOP; unplug during a burst; reconnect without motion; reset/watchdog
 carrier suppression; STOP latency; pairing from fresh identities; and a second

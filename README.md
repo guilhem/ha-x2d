@@ -2,22 +2,20 @@
 
 Control X2D shutters with **Home Assistant's built-in MySensors integration**,
 a YD-RP2040 and a CC1101. The dongle owns the radio identities, associations
-and rolling counters. No HACS component, companion service or MQTT broker.
+and rolling counters. Connect the dongle directly to Home Assistant over USB.
 
 ```text
 Home Assistant / MySensors → USB → RP2040 / x2d-core → CC1101 → shutter
 ```
 
-**Experimental radio support.** Default builds cannot transmit. The historical
-JSONL firmware controlled one France Fermetures / Well’com motor, including
-open, close and STOP, with its original remotes still working. This evidence
-does **not** qualify the MySensors firmware, fresh enrollment or other motors.
+**Experimental radio support.** Default builds cannot transmit. Association
+and motor commands still need qualification with this firmware on real hardware.
 See [hardware qualification](home_assistant/README.md#hardware-qualification).
 
 ## Connect to Home Assistant
 
 1. Build and flash the journal-protecting UF2 described in the
-   [firmware guide](firmware/README.md). Existing paired slots are retained.
+   [firmware guide](firmware/README.md).
 2. Add **MySensors** in Settings → Devices & services. Choose **Serial**, the
    dongle's `/dev/serial/by-id/…` path, **115200 baud** and version **2.3**
    (the default 1.4 is unsuitable).
@@ -32,6 +30,9 @@ See [hardware qualification](home_assistant/README.md#hardware-qualification).
          device_class: shutter
    ```
 
+4. Follow the [pairing procedure](home_assistant/README.md#entities-and-pairing)
+   to associate each shutter. Pairing currently requires a supervised trial build.
+
 Associated shutters appear automatically, up to 16. Their initial entity IDs
 start with `cover.x2d_`; keep that prefix when editing an entity ID. Display
 names can be changed freely. Each cover exposes open, close and STOP, without
@@ -45,9 +46,8 @@ position by convention; `pos_unknown` in the diagnostic explains this.
 Native HA can retain displayed states after unplugging the dongle: an entity
 that looks available is **not** proof that commands can reach its motor.
 
-See the [installation, association and migration guide](home_assistant/README.md)
-before replacing the old HACS integration. A normal migration requires **no
-motor reassociation**, but HA entity references and automations must be updated.
+See the [installation and pairing guide](home_assistant/README.md) for setup,
+diagnostics and updates.
 
 ## Build and check
 
@@ -61,7 +61,7 @@ devenv tasks run firmware:build
 ```
 
 The default UF2 has RF disabled. `firmware:commands-build` explicitly enables
-commands for slots already paired in the journal, without enabling enrollment.
+normal shutter commands after pairing, without enabling new enrollment.
 Build tasks never flash a board. Both builds check the protected journal range.
 
 Software validation targets **HA 2026.9.4**, **pymysensors 0.26.0**, MySensors
@@ -84,6 +84,5 @@ Software checks are separate from HA OS / dongle / motor qualification.
 
 [Serial contract](docs/USB_PROTOCOL.md) · [Radio observations](docs/OBSERVATIONS_RADIO.md)
 
-Older research notes are historical and may describe the removed JSONL/HACS
-architecture. The radio transform derives from mr-sven's work under
+The radio transform derives from mr-sven's work under
 [Apache-2.0](research/LICENSE-APACHE); see the core's LICENSE and NOTICE.
