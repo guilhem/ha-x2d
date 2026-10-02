@@ -1,0 +1,140 @@
+{
+  "title": "Passerelle USB X2D",
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Connecter la passerelle USB",
+        "description": "Sélectionnez la passerelle USB ha-x2d. Chaque volet sera ajouté séparément.",
+        "data": {
+          "device": "Port série"
+        }
+      },
+      "usb_confirm": {
+        "title": "Configurer la passerelle détectée",
+        "description": "Connecter cette passerelle USB partagée par les volets et les diagnostics ?"
+      },
+      "reconfigure": {
+        "title": "Changer le port série",
+        "description": "Sélectionnez le nouveau port de la même passerelle physique.",
+        "data": {
+          "device": "Port série"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Communication impossible avec ce port. Vérifiez le branchement USB et qu’aucune autre application ne l’utilise.",
+      "invalid_gateway": "L’identité du périphérique ou le protocole du firmware est incompatible."
+    },
+    "abort": {
+      "already_configured": "Cette passerelle est déjà configurée.",
+      "invalid_gateway": "Ce périphérique USB ne s’identifie pas comme une passerelle compatible.",
+      "reconfigure_successful": "Le port série a été modifié."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "radio_status": {
+        "name": "État du CC1101",
+        "state": {
+          "not_detected": "Non détecté",
+          "idle": "Au repos",
+          "detected": "Détecté"
+        }
+      }
+    },
+    "binary_sensor": {
+      "connectivity": {
+        "name": "Connexion USB"
+      }
+    }
+  },
+  "config_subentries": {
+    "shutter": {
+      "title": "Volet",
+      "step": {
+        "user": {
+          "title": "Associer un nouveau volet",
+          "description": "Choisissez un emplacement stable pour une nouvelle association. Reprendre une association interrompue avec le même emplacement conserve son identité. Ces consignes concernent uniquement le moteur Franciasoft / Well'com observé avec sa télécommande de BASE d’origine. Ne réinitialisez pas le moteur.",
+          "data": {
+            "name": "Nom du volet",
+            "shutter_id": "Emplacement (1–16)"
+          }
+        },
+        "recorded": {
+          "title": "Ajouter un volet enregistré",
+          "description": "La passerelle détient déjà ces volets associés, absents de Home Assistant :\n{recorded}\n\nNommez le volet pour l’ajouter, puis testez-le. Cela n’ajoute qu’un volet que la passerelle possède déjà : rien n’est associé, créé ni confirmé.",
+          "data": {
+            "name": "Nom du volet",
+            "shutter_id": "Volet enregistré"
+          }
+        },
+        "enroll": {
+          "title": "Mettre le volet en mode association",
+          "description": "{instructions}\n\nHome Assistant inscrit uniquement la nouvelle identité C ; votre télécommande physique ouvre manuellement le mode association.",
+          "data": {
+            "physical_ready": "J’ai observé l’accusé mécanique et relâché STOP ; moins d’une minute s’est écoulée"
+          }
+        },
+        "confirm": {
+          "title": "Confirmer la réponse du moteur",
+          "description": "La passerelle a envoyé la demande d’inscription de sa nouvelle identité C. Confirmez uniquement après avoir observé l’accusé mécanique suivant du moteur. La passerelle ne peut ni l’observer ni connaître la position du moteur.",
+          "data": {
+            "motor_response": "J’ai observé l’accusé mécanique du moteur après l’inscription de C"
+          }
+        },
+        "test": {
+          "title": "Tester le volet associé",
+          "description": "L’association est enregistrée dans la passerelle. Choisissez explicitement une commande de test, volet sous surveillance. Ce formulaire n’émet rien avant votre validation ; aucune commande n’est rejouée après interruption.",
+          "data": {
+            "action": "Commande de test"
+          }
+        },
+        "test_confirm": {
+          "title": "Confirmer le résultat du test",
+          "description": "La passerelle a émis la commande. Confirmez uniquement si vous avez observé le résultat attendu sur le volet. Pour choisir une autre commande, cochez « Tester une autre commande » ; ce choix n’émet rien par lui-même.",
+          "data": {
+            "test_observed": "J’ai observé le résultat attendu",
+            "test_again": "Tester une autre commande"
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "Passerelle indisponible. Vérifiez l’USB et réessayez explicitement ; aucune commande RF n’est rejouée.",
+        "invalid_gateway": "Le protocole ou l’identité de la passerelle est incompatible.",
+        "profile_unverified": "L’association et l’émission RF ne sont pas validées sur des captures réelles. Le firmware refuse cette opération ; aucune réussite moteur n’est déduite.",
+        "instructions_unavailable": "Les instructions documentées d’association du moteur ne sont pas encore disponibles. Aucune association n’est émise.",
+        "physical_ready_required": "Confirmez que vous avez mis le volet en mode association avec votre télécommande existante.",
+        "motor_response_required": "Confirmez la réponse observée du moteur. Une émission RF ne prouve pas l’association.",
+        "storage_corrupt": "Le stockage est corrompu. Aucune réinitialisation ni aucun formatage automatique.",
+        "storage_full": "Le stockage est plein ; cette opération ne peut pas être persistée.",
+        "counter_exhausted": "Le compteur du contrôleur est épuisé. Aucune commande RF n’a été envoyée.",
+        "not_paired": "Ce volet attend encore la confirmation moteur.",
+        "command_uncertain": "Le résultat RF est inconnu. Vérifiez le moteur avant de réessayer explicitement ; l’opération n’est pas rejouée.",
+        "tx_failed": "La passerelle a rejeté ou n’a pas terminé l’opération RF. Aucun résultat moteur n’est confirmé par cette émission.",
+        "test_observed_required": "Confirmez le résultat observé ou choisissez une autre commande de test. L’émission RF seule ne prouve pas le mouvement du volet.",
+        "shutter_unavailable": "Le volet ou la connexion n’est pas prêt pour une commande. Aucune tentative de reconnexion ni aucun rejeu de commande n’est effectué ici."
+      },
+      "abort": {
+        "cannot_connect": "Passerelle indisponible. Vérifiez la connexion USB et ajoutez de nouveau le volet ; aucune commande RF n’est émise.",
+        "invalid_gateway": "Le protocole ou l’identité de la passerelle est incompatible.",
+        "no_slots": "Tous les emplacements de cette passerelle sont déjà configurés.",
+        "enrollment_unavailable": "Tous les volets enregistrés sur la passerelle sont déjà dans Home Assistant, et le firmware installé ne permet pas encore d’associer un nouveau volet.",
+        "already_configured": "Cet emplacement est déjà configuré.",
+        "generation_changed": "Le stockage de la passerelle a changé. L’ancienne référence du volet ne peut pas être réutilisée.",
+        "storage_corrupt": "Le stockage est corrompu. Aucune réinitialisation ni aucun formatage automatique.",
+        "storage_full": "Le stockage est plein ; cette opération ne peut pas être persistée.",
+        "profile_unverified": "L’identité et le compteur initiaux du contrôleur ne sont pas validés. Le firmware refuse le provisionnement ; aucun volet ni état de stockage n’est créé."
+      }
+    }
+  },
+  "selector": {
+    "shutter_action": {
+      "options": {
+        "open": "Monter",
+        "stop": "Arrêter",
+        "close": "Descendre"
+      }
+    }
+  }
+}

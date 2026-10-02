@@ -23,13 +23,7 @@ class RadioStatus(CoordinatorEntity[GatewayCoordinator], SensorEntity):
         super().__init__(coordinator)
         identity = coordinator.info["device_id"]
         self._attr_unique_id = f"{identity}_radio_status"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, identity)},
-            name=f"X2D USB {identity[-6:]}",
-            manufacturer="ha-x2d",
-            model="YD-RP2040 / CC1101",
-            sw_version=coordinator.info["firmware"],
-        )
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, identity)})
 
     @property
     def native_value(self) -> str:

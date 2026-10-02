@@ -263,8 +263,10 @@ par lui-même.
 
 ## 6. Ébauche du contrat USB
 
-**Cible exploratoire, noms indicatifs.** Seuls `hello` et `status` sont implémentés
-dans le [contrat de diagnostic v1](USB_PROTOCOL.md). Commencer avec CDC et des messages textuels
+**Historique de l'exploration.** L'implémentation suit maintenant le
+[contrat USB v2](USB_PROTOCOL.md), sans compatibilité diagnostic v1. La
+qualification et les capacités disponibles sont précisées dans les
+[observations radio](OBSERVATIONS_RADIO.md). CDC utilise des messages textuels
 délimités, par exemple JSON par ligne. Les commandes sont peu volumineuses ;
 un format binaire ne se justifie que si les captures montrent un problème de
 débit ou de mémoire. Les durées radio ne doivent jamais dépendre de la cadence

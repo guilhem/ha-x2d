@@ -50,18 +50,51 @@ in
           -Ibuild/firmware-check/include firmware/check_protocol.cpp \
           -o build/firmware-check/check_protocol
         build/firmware-check/check_protocol
+        g++ -std=c++17 -Wall -Wextra -Werror \
+          firmware/check_radio.cpp -o build/firmware-check/check_radio
+        build/firmware-check/check_radio
+        g++ -std=c++17 -Wall -Wextra -Werror \
+          -Ibuild/firmware-check/include firmware/check_radio_runtime.cpp \
+          -o build/firmware-check/check_radio_runtime
+        build/firmware-check/check_radio_runtime
+        g++ -std=c++17 -Wall -Wextra -Werror \
+          firmware/check_radio_tx.cpp -o build/firmware-check/check_radio_tx
+        build/firmware-check/check_radio_tx
+        g++ -std=c++17 -Wall -Wextra -Werror \
+          firmware/tx_check/check_capture.cpp -o build/firmware-check/check_tx_capture
+        build/firmware-check/check_tx_capture
+        g++ -std=c++17 -Wall -Wextra -Werror \
+          -Ibuild/firmware-check/include firmware/check_rx_debug.cpp \
+          -o build/firmware-check/check_rx_debug
+        build/firmware-check/check_rx_debug
+        python tools/check_uf2_layout.py
       '';
     };
 
     "firmware:build" = {
-      description = "Build the YD-RP2040 diagnostic UF2 using the pinned Arduino profile";
+      description = "Build the unqualified gateway UF2 while protecting its reserved journal";
       exec = ''
         cd "${config.devenv.root}"
-        arduino-cli compile --profile yd-rp2040-2mb \
+        arduino-cli compile --profile yd-rp2040-4mb-journal \
           --output-dir build/firmware firmware/ha_x2d
+        python tools/check_uf2_layout.py build/firmware/ha_x2d.ino.uf2
         mkdir -p dist
         cp build/firmware/ha_x2d.ino.uf2 \
-          dist/ha_x2d-yd-rp2040-2mb-no-fs-UNVERIFIED-HARDWARE.uf2
+          dist/ha_x2d-0.3.0-yd-rp2040-4mb-UNQUALIFIED-RADIO.uf2
+      '';
+    };
+
+    "firmware:commands-build" = {
+      description = "Build commands-only firmware for identities already paired in the journal";
+      exec = ''
+        cd "${config.devenv.root}"
+        arduino-cli compile --profile yd-rp2040-4mb-journal \
+          --build-property compiler.cpp.extra_flags=-DHA_X2D_COMMANDS_TX=1 \
+          --output-dir build/commands firmware/ha_x2d
+        python tools/check_uf2_layout.py build/commands/ha_x2d.ino.uf2
+        mkdir -p dist
+        cp build/commands/ha_x2d.ino.uf2 \
+          dist/ha_x2d-0.3.0-yd-rp2040-4mb-COMMANDS-ONLY-UNQUALIFIED-RADIO.uf2
       '';
     };
 
@@ -70,6 +103,26 @@ in
       exec = ''
         cd "${config.devenv.root}"
         python tools/build_component.py
+      '';
+    };
+
+    "firmware:rx-debug-build" = {
+      description = "Build the passive PIO/DMA receiver with the same protected flash layout";
+      exec = ''
+        cd "${config.devenv.root}"
+        arduino-cli compile --profile yd-rp2040-4mb-journal \
+          --output-dir build/rx-debug firmware/rx_debug
+        python tools/check_uf2_layout.py build/rx-debug/rx_debug.ino.uf2
+      '';
+    };
+
+    "firmware:tx-check-build" = {
+      description = "Build the digital PIO loopback check with CC1101 kept in IDLE";
+      exec = ''
+        cd "${config.devenv.root}"
+        arduino-cli compile --profile yd-rp2040-4mb-journal \
+          --output-dir build/tx-check firmware/tx_check
+        python tools/check_uf2_layout.py build/tx-check/tx_check.ino.uf2
       '';
     };
   };

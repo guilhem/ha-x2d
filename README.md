@@ -6,25 +6,32 @@ An experimental **USB gateway for radio-controlled shutters in Home Assistant**,
 built around a **YD-RP2040 and an SPI CC1101**. The aim is local control without
 a separate MQTT broker, with a Python client other applications can reuse.
 
-> **Early prototype.** Software checks pass, but physical hardware is still
-> untested. Radio reception, pairing and shutter control are not implemented yet.
+> **Experimental.** USB, SPI and passive STOP reception have been checked on
+> hardware. C now opens/stops and closes/stops the current motor from Home
+> Assistant OS, with the original remotes preserved. General enrollment and
+> other motors remain unqualified; the default gateway build keeps RF disabled.
 
 ## What works today
 
 - USB identification, connection diagnostics and CC1101 register probing.
-- Home Assistant setup, gateway status and reconnection handling.
-- Six Python/HA tests, native C++ checks, firmware and integration builds.
+- Reproducible offline decoding of passive captures, plus public test vectors.
+- USB v2 client and native HA subentries: one cover per shutter, unknown position.
+- Simulated two-shutter checks, durable counter journal and STOP queue checks.
+- A commands-only build for identities already paired in the dongle journal.
+- One real HA OS shutter entity, dashboard controls and an automation STOP check.
+- Release-based HACS packaging with the Python client and local brand images.
 
-The first target is **X2D**. The France Fermetures / Well’com shutters under
-study may use **X3D**; real radio captures are needed to confirm the protocol.
+The first target is the France Fermetures / Well’com shutter under study.
+Its observed C cycle works with asynchronous OOK. Enrollment for other motors
+and their identity format still need physical evidence.
 
 ## Three parts, one gateway
 
 | Component | Responsibility |
 | --- | --- |
-| [Home Assistant integration](home_assistant/README.md) | Setup, gateway status and diagnostics. |
+| [Home Assistant integration](home_assistant/README.md) | Gateway setup, shutter subentries and diagnostics. |
 | [Python client](python/README.md) | Async USB communication, usable independently of HA. |
-| [RP2040 firmware](firmware/README.md) | USB commands and SPI access to the CC1101. |
+| [RP2040 firmware](firmware/README.md) | USB contract, radio codec and durable counter journal. |
 
 ## Try it locally
 
@@ -46,10 +53,30 @@ devenv tasks run ha:package
 Both artifacts are written to `dist/`. See the [wiring and firmware guide](firmware/README.md)
 and [Home Assistant installation guide](home_assistant/README.md) for next steps.
 
-## Next: verify the radio
+## Home Assistant installation
 
-Capture the original remotes, identify X2D/X3D, then implement pairing and
-**open / stop / close**. Compatibility with a specific shutter is still unproven.
+The manual archive and commands-only firmware work on HA OS 18.3 / Core
+2026.9.4 with the C slot already paired in the dongle. USB power management,
+open/stop, close/stop and an automation STOP call have been checked on that
+installation. The user also confirms control from the dashboard and the
+motor's automatic stop at its upper limit; HA still has no position feedback.
+
+For HACS, build `dist/x2d.zip` with `python tools/build_component.py --hacs`.
+HACS requires a public GitHub repository. Add this repository as an **Integration**, then install a published
+release. HACS manages the integration files; keep the existing X2D entry and
+shutters when moving from a manual installation. See the
+[installation and update guide](home_assistant/README.md).
+
+Home Assistant represents the dongle as an **X2D USB Gateway** and each shutter
+as a separate connected device. With the commands-only firmware, adding a
+shutter recovers an existing paired identity from the dongle. A single available
+identity is selected automatically; multiple identities are listed explicitly.
+Creating a new radio identity remains unavailable in this firmware.
+
+Publication and an actual HACS installation/update remain to be verified.
+General enrollment, other
+motors, physical STOP latency, old HA backup recovery and power-cut tests
+remain separate qualification steps.
 
 [Architecture and trade-offs](docs/EXPLORATION.md) ·
 [Radio observations](docs/OBSERVATIONS_RADIO.md) ·
