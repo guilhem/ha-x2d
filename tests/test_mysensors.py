@@ -443,6 +443,18 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
             states = {state for entity_id, state in rig.history if entity_id.startswith("cover.")}
             self.assertLessEqual(states, {"open", "closed"})  # no echo ever renders as motion
 
+    async def test_group_close_completes_all_sixteen_real_duration_bursts(self):
+        async with self.system("--burst-ms=1300") as rig:
+            await asyncio.gather(*(rig.command("close_cover", slot) for slot in SLOTS))
+            await until(lambda: len(rig.dongle.ends()) == len(SLOTS),
+                        "all sixteen group commands completing", timeout=30)
+            self.assertEqual({(b["identity"], b["action"], b["counter"]) for b in rig.dongle.bursts()},
+                             {(identity(slot), CLOSE, first_counter(slot)) for slot in SLOTS})
+            self.assertEqual(rig.dongle.ends(),
+                             [{"kind": "end", "completed": 25, "stopped": False}] * len(SLOTS))
+            await until(lambda: all(rig.state(slot).state == "closed" for slot in SLOTS),
+                        "all sixteen covers closed")
+
     async def test_stop_preempts_a_running_movement_at_a_frame_boundary(self):
         async with self.system() as rig:
             await rig.dongle.hold()
