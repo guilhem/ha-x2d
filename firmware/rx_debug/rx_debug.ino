@@ -9,7 +9,8 @@
 #include <hardware/irq.h>
 #include <pico/time.h>
 
-#include <protocol.h>  // shared diagnostic framer and pinned ArduinoJson
+#include <types.h>
+#include <ArduinoJson.h>
 #include "capture.h"
 #include <cc1101.h>
 #include "radio_bus.h"

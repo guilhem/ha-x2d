@@ -30,7 +30,7 @@ in
 
   tasks = {
     "test:python" = {
-      description = "Run USB client and Home Assistant tests with simulated hardware";
+      description = "Run native MySensors and Home Assistant tests over simulated USB";
       after = [ "devenv:python:uv" "firmware:check" ];
       before = [ "devenv:enterTest" ];
       exec = ''
@@ -46,8 +46,7 @@ in
         cd "${config.devenv.root}"
         mkdir -p build/firmware-check/include
         ln -sf "${arduinoJson}" build/firmware-check/include/ArduinoJson.h
-        cmake --fresh -S lib/x2d-core -B build/x2d-core \
-          -DARDUINOJSON_INCLUDE_DIR="$PWD/build/firmware-check/include"
+        cmake --fresh -S lib/x2d-core -B build/x2d-core
         cmake --build build/x2d-core -j2
         ctest --test-dir build/x2d-core --output-on-failure
         g++ -std=c++17 -Wall -Wextra -Werror \
@@ -73,7 +72,7 @@ in
         python tools/check_uf2_layout.py build/firmware/ha_x2d.ino.uf2
         mkdir -p dist
         cp build/firmware/ha_x2d.ino.uf2 \
-          dist/ha_x2d-0.3.0-yd-rp2040-4mb-UNQUALIFIED-RADIO.uf2
+          dist/ha_x2d-0.4.0-yd-rp2040-4mb-UNQUALIFIED-RADIO.uf2
       '';
     };
 
@@ -87,15 +86,7 @@ in
         python tools/check_uf2_layout.py build/commands/ha_x2d.ino.uf2
         mkdir -p dist
         cp build/commands/ha_x2d.ino.uf2 \
-          dist/ha_x2d-0.3.0-yd-rp2040-4mb-COMMANDS-ONLY-UNQUALIFIED-RADIO.uf2
-      '';
-    };
-
-    "ha:package" = {
-      description = "Build the Home Assistant archive with the independent Python client";
-      exec = ''
-        cd "${config.devenv.root}"
-        python tools/build_component.py
+          dist/ha_x2d-0.4.0-yd-rp2040-4mb-COMMANDS-ONLY-UNQUALIFIED-RADIO.uf2
       '';
     };
 

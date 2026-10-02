@@ -6,7 +6,6 @@ profiles:
       - platform: rp2040:rp2040 (6.1.1)
         platform_index_url: https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
     libraries:
-      - ArduinoJson (7.4.3)
       - dir: ../../lib/x2d-core
   yd-rp2040-2mb:
     notes: Compile verification only, 2 MiB without filesystem. Confirm actual flash before hardware use.
@@ -15,5 +14,4 @@ profiles:
       - platform: rp2040:rp2040 (6.1.1)
         platform_index_url: https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
     libraries:
-      - ArduinoJson (7.4.3)
       - dir: ../../lib/x2d-core

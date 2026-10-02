@@ -3,7 +3,8 @@
 #include <USB.h>
 #include <pico/unique_id.h>
 #include <hardware/sync.h>
-#include <protocol.h>
+#include <types.h>
+#include <ArduinoJson.h>
 #include "radio_tx.h"
 #include "capture_check.h"
 #include <cc1101.h>

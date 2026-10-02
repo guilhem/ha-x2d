@@ -1,0 +1,94 @@
+name: Software and firmware checks
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - name: Shared controller, protocol, radio and journal
+        run: |
+          cmake -S lib/x2d-core -B build/x2d-core
+          cmake --build build/x2d-core -j2
+          ctest --test-dir build/x2d-core --output-on-failure
+      - name: RP2040 digital output and capture checks
+        run: |
+          mkdir -p build/firmware-check/include
+          curl -fL https://github.com/bblanchon/ArduinoJson/releases/download/v7.4.3/ArduinoJson-v7.4.3.h -o build/firmware-check/include/ArduinoJson.h
+          echo 'ab5fbb8268b846b5f4bc5a5fee11bb2c96f7b8b846f5bef6540afb6a9cc76a5b  build/firmware-check/include/ArduinoJson.h' | sha256sum -c -
+          g++ -std=c++17 -Wall -Wextra -Werror -Ilib/x2d-core/src firmware/check_radio_tx.cpp -o build/check-radio
+          build/check-radio
+          g++ -std=c++17 -Wall -Wextra -Werror -Ilib/x2d-core/src firmware/tx_check/check_capture.cpp -o build/check-capture
+          build/check-capture
+          g++ -std=c++17 -Wall -Wextra -Werror -Ilib/x2d-core/src -Ibuild/firmware-check/include firmware/check_rx_debug.cpp -o build/check-rx
+          build/check-rx
+      - name: Native HA and pymysensors over PTY, frontend contract, passive decoder
+        run: uv run --locked python -m unittest discover -s tests -v
+      - run: uv run --locked python tools/check_uf2_layout.py
+
+  rp2040:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        profile: [default, commands, trial0, trial2, rx-debug, tx-check]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: arduino/setup-arduino-cli@v2
+        with:
+          version: 1.5.1
+      - name: Compile and verify journal protection
+        shell: bash
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          flags=()
+          sketch=ha_x2d
+          case "$PROFILE" in
+            commands) flags+=(--build-property compiler.cpp.extra_flags=-DHA_X2D_COMMANDS_TX=1) ;;
+            trial0|trial2)
+              flags+=(--build-property "compiler.cpp.extra_flags=-DHA_X2D_SUPERVISED_TX=1 -DHA_X2D_TRIAL_SUFFIX=90 -DHA_X2D_TRIAL_EXPECTED_NEXT_COUNTER=${PROFILE#trial}") ;;
+            rx-debug) sketch=rx_debug ;;
+            tx-check) sketch=tx_check ;;
+          esac
+          arduino-cli compile --profile yd-rp2040-4mb-journal "${flags[@]}" --output-dir build/firmware "firmware/$sketch"
+          python tools/check_uf2_layout.py "build/firmware/$sketch.ino.uf2"
+          # Trial suffix 90 is synthetic; these validation artifacts are not published.
+
+  esphome:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: guilhem/esphome-x2d
+          ref: dac9c7b020738d9f4b834bc3f99d72c4511198a1
+          path: build/esphome-x2d
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r build/esphome-x2d/requirements-dev.txt
+      - name: Shared controller and ESPHome regression checks
+        run: |
+          cmake -S build/esphome-x2d -B build/esphome-checks -DX2D_CORE_DIR="$PWD/lib/x2d-core"
+          cmake --build build/esphome-checks -j2
+          ctest --test-dir build/esphome-checks --output-on-failure
+          cd build/esphome-x2d
+          python -m unittest discover -s tests -p 'test_*.py' -v
+          esphome config examples/esp32-s3.yaml
+          esphome compile examples/esp32-s3.yaml

@@ -1,136 +1,131 @@
-# X2D dans Home Assistant
+# Home Assistant: native MySensors USB
 
-Intégration personnalisée **0.3.1** pour Home Assistant Core **2026.9.4** et
-versions compatibles. La passerelle apparaît comme **X2D Gateway**, avec une
-connexion série locale ou une URL prise en charge par `serialx`.
-Chaque volet est un appareil connecté distinct, avec les commandes montée,
-STOP et descente. La fiche de la passerelle présente les volets dans la liste
-native **Connected devices** ; la page des intégrations les regroupe par
-sous-entrée. Les diagnostics reprennent l’identification, le firmware et les
-capacités annoncés par `hello`, sans supposer un modèle de carte.
+Use Home Assistant Core **2026.9.4**, MySensors protocol **2.3**, and
+**115200 baud**. Install the built-in integration; there is no custom component
+or container to install. Only one process may own the USB serial port.
 
-**Le firmware 0.3.0-commands commande les identités déjà associées dans la clé.
-L'association d'une nouvelle télécommande est reportée.** Un moteur a été
-vérifié physiquement ; plusieurs volets sont couverts uniquement en simulation.
-La position, le mouvement et l'état fermé restent inconnus sans retour moteur.
+## Install
 
-## Installer avec HACS
+1. Wire the YD-RP2040 and CC1101 as described in the [firmware guide](../firmware/README.md#wiring).
+   Build the **4 MiB journal profile** and run `check_uf2_layout.py` on the exact
+   UF2 you will flash, as described in the [firmware guide](../firmware/README.md).
+   Use BOOTSEL to copy that UF2. **Never use flash_nuke, erase the whole flash,
+   mount LittleFS over the journal, or change the linker layout.**
+2. Connect the dongle to the Home Assistant host and add the native
+   **MySensors → Serial** integration using
+   `/dev/serial/by-id/…`, **115200**, **2.3**. Preserve this MySensors entry and
+   its persistence when updating firmware.
+3. Merge this single rule into `configuration.yaml`, then reload Home Assistant
+   customizations or restart HA:
 
-HACS exige un dépôt GitHub public. Une release publiée contenant l'asset
-**x2d.zip** est nécessaire. Un tag
-ou le téléchargement de la branche source ne suffit pas : le client Python est
-intégré au ZIP lors de sa construction. La branche source est masquée dans HACS.
+   ```yaml
+   homeassistant:
+     customize_glob:
+       "cover.x2d_*":
+         assumed_state: true
+         device_class: shutter
+   ```
 
-1. Dans HACS, ouvrir **⋮ → Dépôts personnalisés**.
-2. Ajouter `https://github.com/guilhem/ha-x2d`, catégorie **Intégration**.
-3. Télécharger **X2D Gateway**, version **0.3.1**, puis redémarrer HA.
-4. Dans **Paramètres → Appareils et services**, accepter la découverte USB ou
-   ajouter **X2D Gateway**. Pour une installation manuelle existante,
-   conserver son entrée X2D et ses volets ; ne pas les supprimer ou les recréer.
+4. Follow the pairing procedure below. Each confirmed shutter appears
+   automatically; no per-shutter YAML is needed. Choose its display name and
+   add it to dashboards or automations. Keep the `cover.x2d_` entity-ID prefix
+   so the customization still matches.
 
-L'icône est livrée dans le composant via le mécanisme de
-[marque locale de Home Assistant](https://developers.home-assistant.io/docs/core/integration/brand_images/).
-Ce dépôt est installé comme
-[dépôt personnalisé HACS](https://www.hacs.dev/docs/faq/custom_repositories/).
-Son inscription au catalogue par défaut est une démarche distincte.
+The default UF2 refuses RF while hardware qualification is pending. A supervised
+trial build enables the pairing procedure; after pairing, the commands-only
+build supports normal open, close and STOP operations.
 
-HA OS doit exposer la clé à Core. Préférer un port `/dev/serial/by-id/…` ;
-pour une VM ou un conteneur, transmettre explicitement l'USB. **Reconfigurer**
-permet de changer la connexion de la même passerelle. Son identité est vérifiée ;
-les références des volets et les noms personnalisés sont conservés.
-La clé doit rester éveillée pendant les échanges : `power/control=on` a été
-vérifié sur HA OS 18.3. Sur un autre hôte Linux, utiliser la
-[règle de veille USB ciblée](../firmware/99-ha-x2d-power.rules) et vérifier ce
-réglage ; prolonger les délais ne corrige pas une suspension USB.
+## Entities and pairing
 
-Pour une passerelle réseau, saisir par exemple `socket://192.168.1.20:6638`
-dans le champ **Port série ou URL**, lors de l’ajout manuel ou de la
-reconfiguration. `tcp://` est également pris en charge par `serialx`. L’URL
-est conservée intacte ; la résolution `/dev/serial/by-id` concerne uniquement
-les chemins locaux. Le point de connexion doit fournir le même protocole
-JSONL v2. Le firmware USB actuel ne fournit pas de serveur réseau.
+The fixed virtual node is **1**. Child IDs **1–16** are paired shutter slots,
+**17** is “X2D Pair shutter”, **18** is “X2D Confirm pairing”, and **19** is
+“X2D Diagnostic”. Empty/pending slots are not presented as covers. Native
+MySensors may also create its own battery entity for this mains-powered
+virtual node; disable it in HA, since the dongle reports no battery measurement.
 
-## Récupérer un volet déjà associé
+New enrollment requires an explicitly authorized **experimental trial build**.
+Neither the default nor the commands-only build enables it. Its suffix,
+initial counter and allowed retry still need qualification on the target motor.
 
-Dans l'entrée de la passerelle, ajouter une sous-entrée **Volet** et choisir
-son nom. Si une seule identité associée est disponible, elle est sélectionnée
-automatiquement. Sinon, choisir un volet dans la liste des identités enregistrées.
-Le parcours propose ensuite une commande de test explicite et demande de
-confirmer le résultat observé avant de créer l'entité.
+1. Put the motor into its manufacturer-documented pairing mode under supervision.
+2. Turn **Pair shutter** ON once. The dongle resumes its unique pending slot or
+   selects the first unused slot. It persists a new identity and reserves both
+   counters before transmitting. The switch returns OFF even after refusal.
+3. Read the diagnostic. Each new attempt needs a fresh ON command and must satisfy
+   the compiled trial restrictions. Failed/uncertain attempts consume counters;
+   rebooting cannot retry or recover those counters.
+4. Only after personally observing the motor response, turn **Confirm pairing**
+   ON. A reserved attempt and an idle radio are required. Confirmation is persisted
+   and the new cover is presented immediately. There is no RP2040 reboot.
 
-Cette récupération n'envoie ni `provision`, ni `pair`, ni `confirm`. Elle
-conserve l'identité, la génération et les compteurs de la clé. Si tous ses
-volets associés sont déjà présents dans HA, le bouton d'ajout explique que le
-firmware ne permet pas de créer une nouvelle association. Cela ne signifie pas
-que les 16 emplacements de la clé sont occupés.
+If power disappears after reservation, the pending identity and counters survive.
+Confirmation remains possible after restarting an appropriately authorized build;
+startup itself transmits nothing. Multiple pending slots and concurrent pairing
+operations are refused. OFF never starts an operation. Both switches return OFF
+on processing, refusal and reconnection.
 
-L'ouverture du mode association par une télécommande physique concerne un
-futur firmware d'association qualifié. Elle n'est pas nécessaire pour récupérer
-C. Les essais supervisés et leurs limites sont documentés dans les
-[observations radio](../docs/OBSERVATIONS_RADIO.md).
+## State, diagnostics and USB loss
 
-## Mettre à jour ou revenir à une version précédente
+`V_STATUS` carries a binary estimate only after a complete open/close burst.
+There is no percentage or measured movement. The three commands stay available
+with `assumed_state`; the display may say “open” while position is unknown.
+`pos_unknown` means that STOP, restart, USB loss or uncertain transmission has
+invalidated the estimate. `emitted` establishes transmitter completion only,
+not motor reception. Other diagnostics identify disabled RF, unqualified pairing,
+busy radio, malformed commands, exhausted counters or corrupt storage.
 
-Avant une mise à jour, conserver une sauvegarde de la configuration HA et la
-version actuellement installée. Installer la release souhaitée depuis HACS,
-puis redémarrer HA. Une première migration depuis l'archive manuelle suit la
-même procédure : HACS reprend la gestion des fichiers du composant.
+A requested MySensors echo acknowledges **receipt**, including a radio refusal;
+it is never a motor acknowledgement. Movement indicators remain idle. The
+outcome/refusal is sent independently on the diagnostic child.
 
-L'entrée X2D, ses sous-entrées, les noms personnalisés et les identifiants des
-entités sont conservés, notamment `cover.volet_c`. Le tableau de bord et les
-automatisations continuent donc de viser la même entité. Le firmware n'est pas
-mis à jour par HACS et les compteurs restent exclusivement dans la clé.
+On USB loss the firmware discards pending serial bytes and queued operations,
+and ends an active burst at its next complete frame. It keeps every reservation.
+Reconnection only republishes inventory and states: no command is replayed and
+no actuator state is requested from HA. SmartSleep is not used. A host that
+stops reading can exhaust the bounded response buffer; `serial_overflow` closes
+admission and cancels current work. Reopen the serial connection to recover.
 
-Pour revenir en arrière, sélectionner la release précédente dans HACS,
-la télécharger et redémarrer. L'archive manuelle de cette version constitue
-également un recours si HACS est indisponible. Ne pas supprimer l'intégration
-ni réinitialiser la clé. Restaurer une ancienne configuration HA ne remet pas
-les compteurs radio à zéro ; une génération de journal différente rend les
-anciennes références indisponibles au lieu de les réutiliser.
+**Native HA limitation:** MySensors can keep cached states and available-looking
+covers after disconnection. Check the physical connection and diagnostic before
+inferring that a command worked. The USB power-management condition from the
+[firmware guide](../firmware/README.md#usb-power) also needs verification on HA OS.
 
-## Construire les archives
+## Updates and destructive reset
 
-Depuis la racine du dépôt, dans l'environnement `devenv` :
+Keep the same journal-preserving UF2 layout, MySensors entry and persistence.
+Adding a second slot leaves previous child IDs intact; HA display-name overrides
+are retained. Removing an entity does not free its slot. Slots are never recycled
+within a journal. A corrupt journal blocks RF and reports `storage_corrupt`;
+firmware never formats it automatically.
 
-```sh
-devenv test
-devenv tasks run ha:package
-python tools/build_component.py --hacs
-```
+MySensors commands contain node/child IDs, **not the journal generation**. An old
+HA reference could therefore address a different motor if a slot were reused.
+A full reset is a separate, explicit maintenance operation:
 
-`dist/x2d.zip` contient directement les fichiers du composant, ses traductions,
-sa marque locale et `_client/`. C'est l'asset à joindre à la release HACS.
-`dist/x2d-0.3.1.zip` conserve le préfixe `custom_components/x2d/` pour une
-installation manuelle dans le répertoire de configuration HA. Les deux formats
-ont le même contenu, avec des métadonnées ZIP fixes et reproductibles.
+1. Disable relevant automations and disconnect the dongle.
+2. Remove the MySensors node/device from HA through its device page so the native
+   integration also removes that node from its persisted sensor inventory.
+3. Stop/unload the integration and verify its configured persistence file no
+   longer contains node 1 before reusing any slots. If removing the integration
+   instead, back up and remove its old persistence file **while it is stopped**.
+   Remove stale entity/device references and old automations as appropriate.
+4. Only then perform the separately authorized flash reset and new associations.
+   Do not restore the old MySensors persistence into the new journal generation.
 
-La bibliothèque Python garde une source unique dans `python/src/x2d_gateway/` ;
-le générateur la copie dans `_client/`. Les versions du firmware, du client et
-de l'intégration sont indépendantes ; le contrat partagé reste JSONL v2.
+This procedure is not part of ordinary upgrades, and no reset command is exposed
+by the dongle. Restoring an old HA backup never restores radio counters.
 
-## État et reprise
+## Hardware qualification
 
-`last_command_intent` indique la dernière intention enregistrée par la clé,
-pas la position ni la confirmation d'un mouvement. Une émission RF terminée
-ne prouve pas que le moteur a reçu la commande. Les diagnostics exportés
-masquent les identités, sessions, générations et compteurs privés.
+Qualification is pending for this firmware on HA OS with a YD-RP2040 (4 MiB),
+CC1101 and Well’com motor. Test on the actual
+board: journal-preserving update; unchanged identities and counter monotonicity;
+open/close/STOP; unplug during a burst; reconnect without motion; reset/watchdog
+carrier suppression; STOP latency; pairing from fresh identities; and a second
+association without changing earlier HA IDs or display names. Software/PTY
+checks and successful firmware compilation do not establish these results.
 
-La disponibilité exige une connexion validée, le bon journal, un volet associé,
-une radio détectée et l'émission autorisée. Après perte de liaison, le coordinateur
-réessaie la connexion au prochain rafraîchissement, sans rejouer de commande.
-STOP n'attend pas un rafraîchissement déjà en cours. Une commande dont le
-résultat est perdu après une rupture de liaison reste incertaine et exige
-une vérification humaine avant toute nouvelle tentative explicite. Supprimer une entité
-ou sous-entrée HA n'efface ni l'identité radio ni son compteur dans la clé.
-
-Les essais historiques ont confirmé montée/STOP et descente/STOP de C depuis
-HA OS 18.3 / Core 2026.9.4, le tableau de bord, une automatisation STOP et un
-redémarrage sans mouvement. Les télécommandes A/B ont continué à fonctionner.
-L'installation et la mise à jour réelles par HACS restent à vérifier après
-publication ; ces preuves sont distinctes des tests logiciels et de la
-qualification future de plusieurs moteurs.
-
-Les tests logiciels utilisent le client `serialx` réel sur PTY et TCP local,
-ainsi que les parcours de configuration, reconfiguration et reconnexion du
-composant empaqueté dans HA Core. Ils ne qualifient ni une passerelle réseau
-matérielle ni un futur firmware ESPHome.
+References: [MySensors serial API](https://www.mysensors.org/download/serial_api_20),
+[HA MySensors](https://www.home-assistant.io/integrations/mysensors/),
+[HA native customization](https://www.home-assistant.io/integrations/homeassistant/#manual-customization),
+[HA 2026.9.4 entity implementation](https://github.com/home-assistant/core/blob/2026.9.4/homeassistant/components/mysensors/entity.py).

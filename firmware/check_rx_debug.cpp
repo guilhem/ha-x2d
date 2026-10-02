@@ -1,5 +1,6 @@
 #include "rx_debug/capture.h"
-#include "protocol.h"
+#include <types.h>
+#include <ArduinoJson.h>
 
 #include <assert.h>
 

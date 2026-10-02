@@ -8,12 +8,12 @@
 #include <optional>
 
 #include <cc1101.h>
-#include <gateway.h>
+#include <mysensors.h>
 #include <journal.h>
 #include "radio_bus.h"
 #include "radio_tx.h"
 
-// RP2040 adapter for the portable x2d-core gateway: USB CDC bytes, the reserved
+// RP2040 adapter for the portable x2d-core MySensors adapter: USB CDC bytes, the reserved
 // flash journal region, the CC1101 bus and PIO/DMA transmitter, identity and
 // entropy. Protocol, journal rules and scheduling live in the library.
 
@@ -107,6 +107,7 @@ void hex_id(const uint8_t* bytes, char* destination) {
 // single verified-transmitter gate; any CC1101 or PIO fault clears it.
 class RadioOutput {
  public:
+  bool available() const { return radio.configured(); }
   bool start_burst(const ha_x2d::radio::Waveform& wave, uint32_t chip_ns,
                    uint32_t& started_ms) {
     // begin_tx verifies async OOK/no packet engine before it takes the data pin.
@@ -148,53 +149,17 @@ class RadioOutput {
   uint8_t burst_copies_ = 0;
 } radio_output;
 
-// Firmware policy for the gateway: clock, gates, radio profile and the private
-// supervised-trial rules (seed/suffix/expected counter, fresh entropy).
+// Runtime and association policy live in the shared controller. Only board
+// entropy and the displayed firmware version belong in this adapter.
 struct Policy {
-  uint32_t now_ms() { return millis(); }
-  bool tx_available() { return radio.configured(); }
-  bool enrollment_allowed() { return ENROLLMENT_ENABLED; }
-  ha_x2d::RadioStatus probe_radio() {
-    const auto identity = radio.probe();
-    return {identity.detected, identity.partnum, identity.version, identity.marcstate};
-  }
+  uint32_t random_u32() { return rp2040.hwrand32(); }
   const char* firmware() {
-    return HA_X2D_SUPERVISED_TX ? "0.3.0-trial" : HA_X2D_COMMANDS_TX ? "0.3.0-commands" : "0.3.0";
-  }
-  bool profile(const ha_x2d::TxJob& job, ha_x2d::radio::TxProfile& profile) {
-    profile.copies = job.enrollment ? 24 : 25;
-    profile.chip_ns = ha_x2d::radio::digital_tx::DEFAULT_CHIP_NS;
-    return true;
-  }
-  bool authorize_provision(const ha_x2d::journal::Journal&, uint8_t shutter_id) {
-    return shutter_id == 1;
-  }
-  bool authorize_confirm(const ha_x2d::journal::Journal&, uint8_t shutter_id) {
-    return shutter_id == 1;
-  }
-  // Private trial: one attempt at the chosen next counter. The optional C resume
-  // consumes 2/3; a reboot never restores consumed counters.
-  bool authorize_pair(const ha_x2d::journal::Journal& journal, uint8_t shutter_id) {
-    uint32_t next;
-    return shutter_id == 1 && journal.next_counter(1, &next) &&
-           next == HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER;
-  }
-  // Seed 0 is an explicit supervised hypothesis, never production proof.
-  // Verify the generated ID privately against the captured A/B before RF.
-  bool new_controller(const ha_x2d::journal::Journal& journal,
-                      ha_x2d::journal::NewController& fresh) {
-    do {
-      fresh.identity = ((rp2040.hwrand32() & 0xFFFF) << 8) | HA_X2D_TRIAL_SUFFIX;
-    } while (!(fresh.identity & 0xFFFF00) || journal.find_identity(fresh.identity));
-    fresh.first_counter = 0;
-    do { fresh.generation = (uint64_t{rp2040.hwrand32()} << 32) | rp2040.hwrand32(); }
-    while (!fresh.generation);
-    return true;
+    return HA_X2D_SUPERVISED_TX ? "0.4.0-trial" : HA_X2D_COMMANDS_TX ? "0.4.0-commands" : "0.4.0";
   }
 } policy;
 
-using Gateway = ha_x2d::Gateway<RadioOutput, Policy>;
-std::optional<Gateway> gateway;  // identity and session exist only after boot
+using Gateway = ha_x2d::mysensors::Gateway<RadioOutput, Policy>;
+std::optional<Gateway> gateway;  // identity exists only after boot
 char rx[256];                    // one small USB window; the gateway frames lines
 size_t rx_used = 0, rx_pos = 0;
 
@@ -211,13 +176,7 @@ void flush_output() {
 void setup() {
   pico_unique_board_id_t board_id;
   pico_get_unique_board_id(&board_id);
-  char session[17];  // the gateway copies it
   hex_id(board_id.id, device_id);
-  const uint64_t boot_random =
-      (static_cast<uint64_t>(rp2040.hwrand32()) << 32) | rp2040.hwrand32();
-  uint8_t boot_bytes[8];
-  for (size_t i = 0; i < 8; ++i) boot_bytes[i] = boot_random >> (56 - 8 * i);
-  hex_id(boot_bytes, session);
 
   USB.disconnect();
   USB.setManufacturer("ha-x2d");
@@ -234,18 +193,22 @@ void setup() {
   SPI.setSCK(PIN_SCK);
   SPI.begin();
   radio.reset();  // CC1101 manual reset; no frequency or transmit registers are set
-  journal.open();  // Read only; never format corrupt/unknown storage.
   if (TX_ENABLED) radio.configure_transmitter();
-  gateway.emplace(journal, radio_output, policy, device_id, session);
-  gateway->begin();
+  gateway.emplace(journal, radio_output, policy, device_id);
+  const ha_x2d::PairingAuthorization trial{
+      HA_X2D_SUPERVISED_TX ? uint8_t{1} : uint8_t{0},
+      HA_X2D_TRIAL_SUFFIX, HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER};
+  gateway->begin(TX_ENABLED, ENROLLMENT_ENABLED,
+                 ha_x2d::radio::digital_tx::DEFAULT_CHIP_NS, trial);
 }
 
 void loop() {
   if (!Serial) {
     gateway->disconnected();
     rx_used = rx_pos = 0;
-    while (Serial.available()) Serial.read();
+    for (size_t i = 0; i < sizeof(rx) && Serial.available(); ++i) Serial.read();
   } else {
+    gateway->connected();
     flush_output();
     if (!gateway->failed()) {
       if (rx_pos == rx_used) {
@@ -261,6 +224,6 @@ void loop() {
     }
   }
   // ACK is queued before the runtime can produce its first terminal event.
-  gateway->tick();
+  gateway->tick(millis());
   radio_output.service();
 }
