@@ -46,9 +46,9 @@ in
         cd "${config.devenv.root}"
         mkdir -p build/firmware-check/include
         ln -sf "${arduinoJson}" build/firmware-check/include/ArduinoJson.h
-        cmake --fresh -S lib/x2d-core -B build/x2d-core
-        cmake --build build/x2d-core -j2
-        ctest --test-dir build/x2d-core --output-on-failure
+        cmake --fresh -S . -B build/native
+        cmake --build build/native -j2
+        ctest --test-dir build/native --output-on-failure
         g++ -std=c++17 -Wall -Wextra -Werror \
           -Ilib/x2d-core/src firmware/check_radio_tx.cpp -o build/firmware-check/check_radio_tx
         build/firmware-check/check_radio_tx

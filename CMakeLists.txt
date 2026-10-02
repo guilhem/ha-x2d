@@ -1,0 +1,21 @@
+cmake_minimum_required(VERSION 3.16)
+project(ha_x2d_checks LANGUAGES CXX)
+
+enable_testing()
+set(X2D_BUILD_TESTING ON CACHE BOOL "Run the shared core checks alongside the dongle checks")
+add_subdirectory(lib/x2d-core)
+
+foreach(check IN ITEMS serial mysensors)
+  add_executable(check_${check} firmware/check_${check}.cpp)
+  target_link_libraries(check_${check} PRIVATE x2d::core)
+  target_include_directories(check_${check} PRIVATE firmware/ha_x2d)
+  target_compile_options(check_${check} PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+  add_test(NAME ${check} COMMAND check_${check})
+endforeach()
+
+if(UNIX)
+  add_executable(mysensors_server tests/mysensors_server.cpp)
+  target_link_libraries(mysensors_server PRIVATE x2d::core)
+  target_include_directories(mysensors_server PRIVATE firmware/ha_x2d)
+  target_compile_options(mysensors_server PRIVATE -Wall -Wextra -Werror)
+endif()

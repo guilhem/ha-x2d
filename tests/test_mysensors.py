@@ -1,7 +1,7 @@
-"""Native Home Assistant MySensors over a PTY, against the shared C++ adapter.
+"""Native Home Assistant MySensors over a PTY, against the dongle's C++ adapter.
 
-Nothing here simulates MySensors: the executable is lib/x2d-core's real
-ha_x2d::mysensors::Gateway over simulated flash and radio, Home Assistant is the
+Nothing here simulates MySensors: the executable runs the dongle's real
+x2d::mysensors::Gateway over simulated flash and radio, Home Assistant is the
 installed 2026.9.4 core with its own mysensors integration (real config flow,
 pymysensors 0.26.0 AsyncSerialGateway, real config entry, entity and device
 registries), and the PTY bridge below only forwards bytes in small fragments and
@@ -10,7 +10,7 @@ burst back to identity, action byte and counter. Simulated radio and flash do
 not qualify real RF, USB timing or motors.
 
 Prerequisites: build the mysensors_server CMake target (X2D_MYSENSORS_SERVER can
-override build/x2d-core/mysensors_server) and install pymysensors==0.26.0 and
+override build/native/mysensors_server) and install pymysensors==0.26.0 and
 paho-mqtt==2.1.0 (Home Assistant's mysensors imports the mqtt integration).
 """
 
@@ -43,7 +43,7 @@ except ModuleNotFoundError as error:  # fail loudly: a skip would hide the whole
     ) from error
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVER = Path(os.environ.get("X2D_MYSENSORS_SERVER", ROOT / "build/x2d-core/mysensors_server"))
+SERVER = Path(os.environ.get("X2D_MYSENSORS_SERVER", ROOT / "build/native/mysensors_server"))
 
 NODE, PAIR, CONFIRM, DIAGNOSTIC = 1, 17, 18, 19
 V_STATUS, V_VAR1 = 2, 24

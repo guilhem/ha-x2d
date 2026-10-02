@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 
-namespace ha_x2d::rp2040 {
+namespace x2d::rp2040 {
 
 struct RadioBus {
   void begin_spi() { SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0)); }
@@ -18,4 +18,4 @@ struct RadioBus {
   void data_output(bool output) { pinMode(20, output ? OUTPUT : INPUT); }
 };
 
-}  // namespace ha_x2d::rp2040
+}  // namespace x2d::rp2040

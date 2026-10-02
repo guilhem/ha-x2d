@@ -276,8 +276,21 @@ les commandes d'installation Ubuntu ci-dessus ne sont pas une procédure HA OS.
 ## Shared core
 
 Arduino CLI profiles load the pinned `../../lib/x2d-core` submodule via `dir:`.
-The core owns the codec, journal, STOP runtime, association controller, CC1101
-register operations and bounded MySensors adapter. This repository retains
+The core owns the codec, journal, STOP runtime, association controller and CC1101
+register operations. Its public headers use `<x2d/...>` and namespace `x2d`.
+This repository owns the MySensors protocol, bounded serial I/O, host simulator,
 USB/SPI/GPIO/flash and PIO/DMA adapters, identity and entropy, timing calibration,
 and explicit build-time permissions. The ESPHome adapter uses the same controller
 but retains ownership of native API visibility, reboot-after-confirmation and OTA.
+
+Host checks build from this repository root so the dongle's MySensors protocol
+and the independent X2D library are both tested:
+
+```sh
+cmake -S . -B build/native
+cmake --build build/native
+ctest --test-dir build/native --output-on-failure
+```
+
+The resulting `build/native/mysensors_server` supplies the simulated USB
+endpoint used by the native Home Assistant tests.

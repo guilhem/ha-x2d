@@ -3,8 +3,8 @@
 #include <stdio.h>
 #include <vector>
 #include "ha_x2d/radio_tx.h"
-using namespace ha_x2d::radio;
-namespace tx = ha_x2d::radio::digital_tx;
+using namespace x2d::radio;
+namespace tx = x2d::radio::digital_tx;
 struct Marker { uint32_t word; size_t tick; };
 struct Run {
   std::vector<bool> pins;

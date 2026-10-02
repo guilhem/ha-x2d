@@ -77,8 +77,9 @@ Software checks are separate from HA OS / dongle / motor qualification.
 
 | Location | Responsibility |
 | --- | --- |
-| `firmware/ha_x2d/` | USB identity, flash mapping, SPI and PIO/DMA output |
-| `lib/x2d-core/` | Shared association controller, codec, journal, STOP runtime and MySensors adapter |
+| `firmware/ha_x2d/` | MySensors adapter, USB identity, flash mapping, SPI and PIO/DMA output |
+| `lib/x2d-core/` | Portable X2D codec, journal, STOP runtime, association controller and CC1101 driver |
+| `tests/mysensors_server.cpp` | Dongle adapter with simulated radio/flash for native HA tests |
 | `tests/test_mysensors.py` | Native HA and pymysensors over simulated USB |
 | `firmware/rx_debug/`, `tools/` | Passive capture and offline radio analysis |
 

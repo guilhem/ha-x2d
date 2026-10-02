@@ -1,5 +1,5 @@
 #pragma once
-#include "radio_codec.h"
+#include <x2d/radio_codec.h>
 
 namespace tx_check {
 constexpr uint8_t COPIES = 3;
@@ -25,7 +25,7 @@ struct Analysis {
 // Match every expected transition, each chip center, the low gaps and tail.
 // Edge tolerance is two capture samples. Both PIOs use the SAME clk_sys: this
 // measures digital shape/relative timing, not the quartz's absolute accuracy.
-inline Analysis analyze(const ha_x2d::radio::Waveform& wave,
+inline Analysis analyze(const x2d::radio::Waveform& wave,
                         const uint32_t* words, size_t count,
                         double sample_ns, double chip_ns) {
   Analysis out;

@@ -6,7 +6,7 @@
 #include "capture_check.h"
 
 int main() {
-  using namespace ha_x2d::radio;
+  using namespace x2d::radio;
   Body body;
   assert(make_body(0xF73192, 4, 6641, &body)); // public vector only
   body.length = MAX_BODY_BYTES;
