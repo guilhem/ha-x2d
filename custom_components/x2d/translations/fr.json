@@ -1,41 +1,41 @@
 {
-  "title": "Passerelle USB X2D",
+  "title": "Passerelle X2D",
   "config": {
     "flow_title": "{name}",
     "step": {
       "user": {
-        "title": "Connecter la passerelle USB",
-        "description": "Sélectionnez la passerelle USB ha-x2d. Chaque volet sera ajouté séparément.",
+        "title": "Connecter la passerelle",
+        "description": "Sélectionnez un port série local ou saisissez une URL serialx, par exemple socket://hôte:port. Chaque volet sera ajouté séparément.",
         "data": {
-          "device": "Port série"
+          "device": "Port série ou URL"
         }
       },
       "usb_confirm": {
         "title": "Configurer la passerelle détectée",
-        "description": "Connecter cette passerelle USB partagée par les volets et les diagnostics ?"
+        "description": "Connecter cette passerelle partagée par les volets et les diagnostics ?"
       },
       "reconfigure": {
-        "title": "Changer le port série",
-        "description": "Sélectionnez le nouveau port de la même passerelle physique.",
+        "title": "Changer la connexion",
+        "description": "Sélectionnez un port série local ou saisissez une URL serialx pour la même passerelle physique.",
         "data": {
-          "device": "Port série"
+          "device": "Port série ou URL"
         }
       }
     },
     "error": {
-      "cannot_connect": "Communication impossible avec ce port. Vérifiez le branchement USB et qu’aucune autre application ne l’utilise.",
+      "cannot_connect": "Communication impossible. Vérifiez le branchement USB ou l’adresse réseau et qu’aucune autre application ne possède la passerelle.",
       "invalid_gateway": "L’identité du périphérique ou le protocole du firmware est incompatible."
     },
     "abort": {
       "already_configured": "Cette passerelle est déjà configurée.",
       "invalid_gateway": "Ce périphérique USB ne s’identifie pas comme une passerelle compatible.",
-      "reconfigure_successful": "Le port série a été modifié."
+      "reconfigure_successful": "La connexion a été modifiée."
     }
   },
   "entity": {
     "sensor": {
       "radio_status": {
-        "name": "État du CC1101",
+        "name": "État radio",
         "state": {
           "not_detected": "Non détecté",
           "idle": "Au repos",
@@ -45,7 +45,7 @@
     },
     "binary_sensor": {
       "connectivity": {
-        "name": "Connexion USB"
+        "name": "Connexion"
       }
     }
   },
@@ -100,7 +100,7 @@
         }
       },
       "error": {
-        "cannot_connect": "Passerelle indisponible. Vérifiez l’USB et réessayez explicitement ; aucune commande RF n’est rejouée.",
+        "cannot_connect": "Passerelle indisponible. Vérifiez la connexion et réessayez explicitement ; aucune commande RF n’est rejouée.",
         "invalid_gateway": "Le protocole ou l’identité de la passerelle est incompatible.",
         "profile_unverified": "L’association et l’émission RF ne sont pas validées sur des captures réelles. Le firmware refuse cette opération ; aucune réussite moteur n’est déduite.",
         "instructions_unavailable": "Les instructions documentées d’association du moteur ne sont pas encore disponibles. Aucune association n’est émise.",
@@ -116,7 +116,7 @@
         "shutter_unavailable": "Le volet ou la connexion n’est pas prêt pour une commande. Aucune tentative de reconnexion ni aucun rejeu de commande n’est effectué ici."
       },
       "abort": {
-        "cannot_connect": "Passerelle indisponible. Vérifiez la connexion USB et ajoutez de nouveau le volet ; aucune commande RF n’est émise.",
+        "cannot_connect": "Passerelle indisponible. Vérifiez la connexion et ajoutez de nouveau le volet ; aucune commande RF n’est envoyée.",
         "invalid_gateway": "Le protocole ou l’identité de la passerelle est incompatible.",
         "no_slots": "Tous les emplacements de cette passerelle sont déjà configurés.",
         "enrollment_unavailable": "Tous les volets enregistrés sur la passerelle sont déjà dans Home Assistant, et le firmware installé ne permet pas encore d’associer un nouveau volet.",

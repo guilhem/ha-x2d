@@ -1,4 +1,4 @@
-"""Independent USB v2 client; one reader, no RF encoding or request replay."""
+"""Independent serialx v2 client; one reader, no RF encoding or request replay."""
 
 import asyncio
 from collections.abc import Callable
@@ -146,6 +146,7 @@ class Gateway:
 
     @classmethod
     async def open(cls, device: str, *, expected_device_id: str | None = None) -> "Gateway":
+        """Identify a gateway at a local serial path or a serialx URL unchanged."""
         loop = asyncio.get_running_loop()
         reader = asyncio.StreamReader(limit=MAX_LINE_BYTES)
         protocol = asyncio.StreamReaderProtocol(reader)

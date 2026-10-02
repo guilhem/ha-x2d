@@ -1,41 +1,41 @@
 {
-  "title": "X2D USB Gateway",
+  "title": "X2D Gateway",
   "config": {
     "flow_title": "{name}",
     "step": {
       "user": {
-        "title": "Connect the USB gateway",
-        "description": "Select the ha-x2d USB gateway. Add each shutter separately afterwards.",
+        "title": "Connect the gateway",
+        "description": "Select a local serial port or enter a serialx URL, for example socket://host:port. Add each shutter separately afterwards.",
         "data": {
-          "device": "Serial port"
+          "device": "Serial port or URL"
         }
       },
       "usb_confirm": {
         "title": "Set up the detected gateway",
-        "description": "Connect this USB gateway shared by shutters and diagnostics?"
+        "description": "Connect this gateway shared by shutters and diagnostics?"
       },
       "reconfigure": {
-        "title": "Change the serial port",
-        "description": "Select the new port for the same physical gateway.",
+        "title": "Change the connection",
+        "description": "Select a local serial port or enter a serialx URL for the same physical gateway.",
         "data": {
-          "device": "Serial port"
+          "device": "Serial port or URL"
         }
       }
     },
     "error": {
-      "cannot_connect": "Cannot communicate with this port. Check the USB connection and that another application does not own it.",
+      "cannot_connect": "Cannot communicate with the gateway. Check the USB connection or network address and that another application does not own it.",
       "invalid_gateway": "The device identity or firmware protocol is incompatible."
     },
     "abort": {
       "already_configured": "This gateway is already configured.",
       "invalid_gateway": "The USB device does not identify a supported gateway.",
-      "reconfigure_successful": "The serial port was updated."
+      "reconfigure_successful": "The connection was updated."
     }
   },
   "entity": {
     "sensor": {
       "radio_status": {
-        "name": "CC1101 status",
+        "name": "Radio status",
         "state": {
           "not_detected": "Not detected",
           "idle": "Idle",
@@ -45,7 +45,7 @@
     },
     "binary_sensor": {
       "connectivity": {
-        "name": "USB connection"
+        "name": "Connection"
       }
     }
   },
@@ -100,7 +100,7 @@
         }
       },
       "error": {
-        "cannot_connect": "Gateway unavailable. Check USB and retry explicitly; no RF command is replayed.",
+        "cannot_connect": "Gateway unavailable. Check the connection and retry explicitly; no RF command is replayed.",
         "invalid_gateway": "The gateway protocol or identity is incompatible.",
         "profile_unverified": "RF enrollment and transmission have not been verified on real captures. Firmware refuses this operation; no motor success is inferred.",
         "instructions_unavailable": "Documented motor enrollment instructions are not available yet. No enrollment is transmitted.",
@@ -116,7 +116,7 @@
         "shutter_unavailable": "The shutter or connection is not ready for a command. This action does not reconnect or replay commands."
       },
       "abort": {
-        "cannot_connect": "Gateway unavailable. Check the USB connection and add the shutter again; no RF command is sent.",
+        "cannot_connect": "Gateway unavailable. Check the connection and add the shutter again; no RF command is sent.",
         "invalid_gateway": "The gateway protocol or identity is incompatible.",
         "no_slots": "All shutter slots on this gateway are already configured.",
         "enrollment_unavailable": "Every shutter recorded on the gateway is already in Home Assistant, and the installed firmware cannot pair a new shutter yet.",

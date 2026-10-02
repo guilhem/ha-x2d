@@ -1,6 +1,6 @@
 {
   "domain": "x2d",
-  "name": "X2D USB Gateway",
+  "name": "X2D Gateway",
   "version": "0.3.1",
   "documentation": "https://github.com/guilhem/ha-x2d/blob/main/home_assistant/README.md",
   "issue_tracker": "https://github.com/guilhem/ha-x2d/issues",

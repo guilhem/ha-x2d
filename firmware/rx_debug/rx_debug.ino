@@ -9,16 +9,17 @@
 #include <hardware/irq.h>
 #include <pico/time.h>
 
-#include "protocol.h"  // shared diagnostic framer and pinned ArduinoJson
+#include <protocol.h>  // shared diagnostic framer and pinned ArduinoJson
 #include "capture.h"
+#include <cc1101.h>
+#include "radio_bus.h"
 
 namespace {
 
 constexpr uint8_t MISO_PIN = 16, CS_PIN = 17, SCK_PIN = 18, MOSI_PIN = 19;
 constexpr uint8_t DATA_PIN = 20, CARRIER_PIN = 21;
-const SPISettings RADIO_SPI(4000000, MSBFIRST, SPI_MODE0);
-// Only these radio strobes can be issued. No transmit strobe or FIFO writes.
-enum class Strobe : uint8_t { reset = 0x30, calibrate = 0x33, rx = 0x34, idle = 0x36 };
+ha_x2d::rp2040::RadioBus radio_bus;
+ha_x2d::cc1101::Driver<ha_x2d::rp2040::RadioBus, ha_x2d::cc1101::Mode::rx_debug> radio(radio_bus);
 
 rx_debug::Capture capture;
 rx_debug::Config config;
@@ -26,7 +27,7 @@ ha_x2d::LineFramer input(rx_debug::MAX_INPUT_BYTES);
 char output[rx_debug::MAX_OUTPUT_BYTES];
 size_t output_size = 0, output_sent = 0;
 uint32_t pending_samples = 0, sequence = 0, config_id = 0;
-uint32_t spi_errors = 0, output_errors = 0, serial_read_errors = 0;
+uint32_t output_errors = 0, serial_read_errors = 0;
 uint64_t reported_dropped = 0;
 uint32_t reported_gaps = 0, chunk_sequence = 0;
 uint32_t last_status_ms = 0;
@@ -52,58 +53,6 @@ void hex_id(const uint8_t* bytes, char* dest) {
     dest[i * 2 + 1] = digits[bytes[i] & 15];
   }
   dest[16] = '\0';
-}
-
-bool begin_radio() {
-  SPI.beginTransaction(RADIO_SPI);
-  digitalWrite(CS_PIN, LOW);
-  const uint32_t start = micros();
-  while (digitalRead(MISO_PIN)) {
-    if (static_cast<uint32_t>(micros() - start) >= 2000) {
-      digitalWrite(CS_PIN, HIGH);
-      SPI.endTransaction();
-      ++spi_errors;
-      return false;
-    }
-  }
-  return true;
-}
-
-void end_radio() { digitalWrite(CS_PIN, HIGH); SPI.endTransaction(); }
-
-bool strobe(Strobe command) {
-  if (!begin_radio()) return false;
-  SPI.transfer(static_cast<uint8_t>(command));
-  end_radio();
-  return true;
-}
-
-bool read_register(uint8_t address, uint8_t& value, bool status = false) {
-  if (!begin_radio()) return false;
-  SPI.transfer(address | (status ? 0xC0 : 0x80));
-  value = SPI.transfer(0);
-  end_radio();
-  return true;
-}
-
-bool write_register(uint8_t address, uint8_t value) {
-  if (!begin_radio()) return false;
-  SPI.transfer(address);
-  SPI.transfer(value);
-  end_radio();
-  uint8_t observed;
-  return read_register(address, observed) && observed == value;
-}
-
-bool wait_state(uint8_t expected) {
-  const uint32_t start = micros();
-  do {
-    uint8_t state;
-    if (!read_register(0x35, state, true)) return false;
-    if ((state & 0x1F) == expected) return true;
-    delayMicroseconds(100);
-  } while (static_cast<uint32_t>(micros() - start) < 20000);
-  return false;
 }
 
 uint32_t dma_mask() { return (1u << dma_channels[0]) | (1u << dma_channels[1]); }
@@ -244,40 +193,15 @@ void start_sampler() {
 bool stop_radio() {
   stop_sampler();
   receiving = false;
-  return strobe(Strobe::idle) && wait_state(1);
+  return radio.idle();
 }
 
 bool start_radio(const rx_debug::Config& candidate) {
-  if (!stop_radio() || !detected || !sampler_ready) return false;
-  const uint32_t freq = rx_debug::frequency_word(candidate.frequency_hz);
-  // TI SWRS061I asynchronous RX; DN022 narrow-band receive tuning.
-  // Pin radio control, sync, Manchester, whitening, CRC and FEC are disabled.
-  const uint8_t common[][2] = {
-      {0x00, 0x0E}, {0x01, 0x2E}, {0x02, 0x0D}, {0x03, 0x47},
-      {0x07, 0x00}, {0x08, 0x30}, {0x0A, 0x00}, {0x0B, 0x06}, {0x0C, 0x00},
-      {0x0D, static_cast<uint8_t>(freq >> 16)},
-      {0x0E, static_cast<uint8_t>(freq >> 8)}, {0x0F, static_cast<uint8_t>(freq)},
-      {0x13, 0x00}, {0x16, 0x07}, {0x17, 0x3C}, {0x18, 0x08},
-      {0x21, 0xB6}, {0x2C, 0x81}, {0x2D, 0x35}};
-  for (const auto& pair : common)
-    if (!write_register(pair[0], pair[1])) return false;
-  const uint8_t modem[][2] = {
-      {0x10, static_cast<uint8_t>(candidate.ook ? 0x87 : 0x7A)},
-      {0x11, static_cast<uint8_t>(candidate.ook ? 0x85 : 0x93)},
-      {0x12, static_cast<uint8_t>(candidate.ook ? 0x30 : 0x00)},
-      {0x15, candidate.ook ? static_cast<uint8_t>(0) :
-                          rx_debug::deviation_register(candidate.deviation_hz)},
-      {0x19, static_cast<uint8_t>(candidate.ook ? 0x14 : 0x16)},
-      {0x1B, static_cast<uint8_t>(candidate.ook ? 0x04 : 0x03)},
-      {0x1C, static_cast<uint8_t>(candidate.ook ? 0x00 : 0x40)},
-      {0x1D, static_cast<uint8_t>(candidate.ook ? 0x92 : 0x91)}};
-  for (const auto& pair : modem)
-    if (!write_register(pair[0], pair[1])) return false;
-  if (!strobe(Strobe::calibrate) || !wait_state(1) ||
-      !strobe(Strobe::rx) || !wait_state(0x0D)) {
-    strobe(Strobe::idle);
-    return false;
-  }
+  stop_sampler();
+  receiving = false;
+  if (!detected || !sampler_ready) { radio.idle(); return false; }
+  if (!radio.configure_receiver(candidate.ook, candidate.frequency_hz,
+                                 rx_debug::deviation_register(candidate.deviation_hz))) return false;
   config = candidate;
   ++config_id;
   receiving = true;
@@ -344,32 +268,32 @@ void status_document(JsonDocument& doc, const char* type) {
   counters["dropped_samples"] = dropped;
   const char* keys[] = {"overrun_blocks", "gap_events", "copy_retries", "pio_stalls", "dma_chain_stalls", "capture_epoch"};
   for (size_t i = 0; i < 6; ++i) counters[keys[i]] = values[i];
-  counters["spi_errors"] = spi_errors;
+  counters["spi_errors"] = radio.spi_errors();
   counters["output_errors"] = output_errors;
   counters["serial_read_errors"] = serial_read_errors;
   doc["gdo0"] = digitalRead(DATA_PIN);
   doc["gdo2"] = digitalRead(CARRIER_PIN);
   doc["gdo0_wiring_ok"] = data_wire_ok;
   doc["gdo2_wiring_ok"] = carrier_wire_ok;
-  JsonObject radio = doc["radio"].to<JsonObject>();
+  JsonObject radio_json = doc["radio"].to<JsonObject>();
   bool ok = true;
   const uint8_t addresses[] = {0x30, 0x31, 0x35, 0x34, 0x32, 0x38};
   const char* names[] = {"partnum", "version", "marcstate", "rssi_raw", "freqest_raw", "pktstatus"};
   for (size_t i = 0; i < sizeof(addresses); ++i) {
     uint8_t value;
-    if (read_register(addresses[i], value, true)) {
-      radio[names[i]] = i == 2 ? value & 0x1F : value;
-      if (i == 3) radio["rssi_dbm_approx"] = static_cast<int8_t>(value) / 2.0 - 74;
-    } else { radio[names[i]] = nullptr; ok = false; }
+    if (radio.read_register(addresses[i], value, true)) {
+      radio_json[names[i]] = i == 2 ? value & 0x1F : value;
+      if (i == 3) radio_json["rssi_dbm_approx"] = static_cast<int8_t>(value) / 2.0 - 74;
+    } else { radio_json[names[i]] = nullptr; ok = false; }
   }
-  JsonArray registers = radio["registers_00_2e"].to<JsonArray>();
+  JsonArray registers = radio_json["registers_00_2e"].to<JsonArray>();
   for (uint8_t i = 0; i <= 0x2E; ++i) {
     uint8_t value;
-    if (read_register(i, value)) registers.add(value);
+    if (radio.read_register(i, value)) registers.add(value);
     else { registers.add(nullptr); ok = false; }
   }
-  radio["spi_ok"] = ok;
-  radio["detected"] = detected;
+  radio_json["spi_ok"] = ok;
+  radio_json["detected"] = detected;
 }
 
 void send_status(const char* type = "status") {
@@ -474,31 +398,10 @@ void setup() {
   SPI.setTX(MOSI_PIN);
   SPI.setSCK(SCK_PIN);
   SPI.begin();
-  digitalWrite(CS_PIN, HIGH); delayMicroseconds(40);
-  digitalWrite(CS_PIN, LOW); delayMicroseconds(10);
-  digitalWrite(CS_PIN, HIGH); delayMicroseconds(40);
-  uint8_t part, version;
-  detected = strobe(Strobe::reset) && wait_state(1) &&
-             read_register(0x30, part, true) && read_register(0x31, version, true) &&
-             part == 0 && (version == 4 || version == 0x14);
+  detected = radio.reset() && radio.probe().detected;
   if (detected) {
-    // TI Table 41: constant low then inverted constant high, one wire at a time.
-    const bool data_low_written = write_register(0x02, 0x2F);
-    delayMicroseconds(50);
-    const bool data_low = digitalRead(DATA_PIN) == LOW;
-    const bool data_high_written = write_register(0x02, 0x6F);
-    delayMicroseconds(50);
-    data_wire_ok = data_low_written && data_high_written && data_low && digitalRead(DATA_PIN) == HIGH;
-    const bool data_restored = write_register(0x02, 0x0D);
-    const bool carrier_low_written = write_register(0x00, 0x2F);
-    delayMicroseconds(50);
-    const bool carrier_low = digitalRead(CARRIER_PIN) == LOW;
-    const bool carrier_high_written = write_register(0x00, 0x6F);
-    delayMicroseconds(50);
-    carrier_wire_ok = carrier_low_written && carrier_high_written && carrier_low && digitalRead(CARRIER_PIN) == HIGH;
-    const bool carrier_restored = write_register(0x00, 0x0E);
-    data_wire_ok = data_wire_ok && data_restored;
-    carrier_wire_ok = carrier_wire_ok && carrier_restored;
+    data_wire_ok = radio.verify_wire(0x02, DATA_PIN, 0x0D);
+    carrier_wire_ok = radio.verify_wire(0x00, CARRIER_PIN, 0x0E);
   }
   init_sampler();
 }

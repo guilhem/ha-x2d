@@ -21,12 +21,12 @@ arduino-cli compile --profile yd-rp2040-4mb-journal \
   firmware/rx_debug
 g++ -std=c++17 -Wall -Wextra -Werror \
   -I.devenv/state/arduino/data/internal/ArduinoJson_7.4.3_65bbd090d30b7927/ArduinoJson/src \
-  firmware/check_rx_debug.cpp -o build/rx-debug/check_rx_debug
+  -Ilib/x2d-core/src firmware/check_rx_debug.cpp -o build/rx-debug/check_rx_debug
 build/rx-debug/check_rx_debug
 ```
 
-UF2 : `build/rx-debug/rx_debug.ino.uf2`. Les liens `sketch.yaml` et `protocol.h`
-réutilisent Arduino-Pico **6.1.1**, ArduinoJson **7.4.3** et le framer existants.
+UF2 : `build/rx-debug/rx_debug.ino.uf2`. Le lien `sketch.yaml`
+réutilise Arduino-Pico **6.1.1**, ArduinoJson **7.4.3** et le framer existants.
 La flash physique observée est **4 MiB** ; ce build réserve la même zone de
 journal que la passerelle, sans l’utiliser ni monter de système de fichiers.
 `devenv tasks run firmware:rx-debug-build` vérifie aussi la protection UF2.
@@ -186,7 +186,7 @@ chaque adresse de l'UF2 avec `tools/check_uf2_layout.py`, puis produit
 Les mises à jour doivent utiliser ce profil et passer cette vérification ;
 un effacement total de flash ou un autre layout détruirait les associations.
 
-[ha_x2d/journal.h](ha_x2d/journal.h) réserve durablement un compteur par
+[journal.h](https://github.com/guilhem/x2d-core/blob/ef5b86d7a1b965d316d2df2ff536d79db7c8db7e/src/journal.h) réserve durablement un compteur par
 commande logique et interdit son rebouclage. Le backend matériel protège les
 écritures flash par exclusion des IRQ et de l'autre cœur. Les tests natifs
 injectent coupures et corruption, vérifient deux compteurs indépendants et
@@ -194,7 +194,7 @@ la file STOP. Ils ne constituent pas des essais de coupure sur la carte.
 Le codec et ses temporisations sont comparés hors ligne ; aucun scheduler
 PIO d'émission n'est activé sans qualification du profil et de l'association.
 
-Le scheduler [radio_runtime.h](ha_x2d/radio_runtime.h) est raccordé au journal,
+Le scheduler [radio_runtime.h](https://github.com/guilhem/x2d-core/blob/ef5b86d7a1b965d316d2df2ff536d79db7c8db7e/src/radio_runtime.h) est raccordé au journal,
 au pilote [radio_tx.h](ha_x2d/radio_tx.h) et aux opérations USB. Ses deux gates
 restent désactivés dans le build distribué. Les actions du cycle B observé
 sont `81` (montée), `82` (descente) et `04` (STOP). Chaque réservation précède
@@ -320,3 +320,20 @@ Vérifier ensuite `power/control=on`. L'accès au port série relève de `dialou
 l'accès USB BOOTSEL peut être donné à `plugdev` par une règle VID/PID séparée.
 Sur HA OS, vérifier cette condition lors de la qualification du lien USB ;
 les commandes d'installation Ubuntu ci-dessus ne sont pas une procédure HA OS.
+
+## Cœur partagé
+
+Les profils Arduino CLI chargent `../../lib/x2d-core` via `dir:`. Initialiser
+ce sous-module avant les tests ou les builds :
+
+```sh
+git submodule update --init --recursive
+```
+
+Le [cœur portable](https://github.com/guilhem/x2d-core/blob/ef5b86d7a1b965d316d2df2ff536d79db7c8db7e/README.md) possède le codec, le journal,
+l'ordonnanceur STOP, le serveur JSONL v2 et les séquences CC1101. Le sketch
+conserve les adaptateurs USB/SPI/GPIO/flash et PIO/DMA, l'identité, le hasard,
+la calibration et la politique d'autorisation des profils. La région du journal
+reste `0x101FF000`, sans montage ni formatage. Les tests natifs sont exécutés
+par CMake depuis le sous-module, puis complétés ici par les contrôles PIO,
+RX/TX, les tests du client réel sur PTY/TCP et les contrôles des régions UF2.

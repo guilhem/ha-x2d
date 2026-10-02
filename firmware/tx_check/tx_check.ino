@@ -3,18 +3,20 @@
 #include <USB.h>
 #include <pico/unique_id.h>
 #include <hardware/sync.h>
-#include "protocol.h"
+#include <protocol.h>
 #include "radio_tx.h"
 #include "capture_check.h"
+#include <cc1101.h>
+#include "radio_bus.h"
 
 namespace {
 namespace tx = ha_x2d::radio::digital_tx;
 constexpr uint8_t MISO_PIN = 16, CS_PIN = 17, SCK_PIN = 18, MOSI_PIN = 19, DATA_PIN = 20;
 constexpr uint32_t SAMPLE_HZ = 400000;
 constexpr size_t CAPTURE_WORDS = 4096, CAPTURE_SAMPLES = CAPTURE_WORDS * 32;
-const SPISettings RADIO_SPI(4000000, MSBFIRST, SPI_MODE0);
-// The complete strobe allowlist. No RF activation, calibration or FIFO writes.
-enum class Strobe : uint8_t { reset = 0x30, idle = 0x36 };
+ha_x2d::rp2040::RadioBus radio_bus;
+ha_x2d::cc1101::Driver<ha_x2d::rp2040::RadioBus, ha_x2d::cc1101::Mode::tx_check> radio(radio_bus);
+ha_x2d::cc1101::DigitalInput radio_input;
 enum class Phase : uint8_t { idle, frames, tail, cleanup, blocked };
 Phase phase = Phase::idle;
 tx::Tx transmitter;
@@ -33,7 +35,7 @@ bool sampler_armed = false, capture_complete = false, analysis_ready = false;
 bool radio_known = false, cleanup_ok = false, result_reported = false;
 bool usb_stress = false, continuous_gap_match = false;
 uint32_t usb_read_bytes = 0, usb_written_bytes = 0;
-uint8_t marcstate = 0, iocfg0 = 0, pktctrl0 = 0, frames = 0, tx_error = 0;
+uint8_t frames = 0, tx_error = 0;
 uint32_t sampler_hz = 0, sampler_divider = 0, tx_divider = 0;
 size_t confirmed_words = 0;
 uint64_t sampler_started_us = 0, capture_deadline_us = 0, cleanup_deadline_us = 0;
@@ -41,67 +43,16 @@ uint64_t burst_started_us = 0, burst_boundary_us = 0;
 const char* failure = nullptr;
 tx_check::Analysis analysis;
 
-bool begin_radio() {
-  SPI.beginTransaction(RADIO_SPI);
-  digitalWrite(CS_PIN, LOW);
-  const uint32_t start = micros();
-  while (digitalRead(MISO_PIN)) {
-    if (static_cast<uint32_t>(micros() - start) >= 2000) {
-      digitalWrite(CS_PIN, HIGH);
-      SPI.endTransaction();
-      return false;
-    }
-  }
-  return true;
-}
-void end_radio() { digitalWrite(CS_PIN, HIGH); SPI.endTransaction(); }
-bool strobe(Strobe command) {
-  if (!begin_radio()) return false;
-  SPI.transfer(static_cast<uint8_t>(command));
-  end_radio();
-  return true;
-}
-bool read_register(uint8_t address, uint8_t& value, bool status = false) {
-  if (!begin_radio()) return false;
-  SPI.transfer(address | (status ? 0xC0 : 0x80));
-  value = SPI.transfer(0);
-  end_radio();
-  return true;
-}
-bool write_register(uint8_t address, uint8_t value) {
-  if (!begin_radio()) return false;
-  SPI.transfer(address);
-  SPI.transfer(value);
-  end_radio();
-  uint8_t observed;
-  return read_register(address, observed) && observed == value;
-}
 bool read_radio() {
-  radio_known = read_register(0x35, marcstate, true) &&
-                read_register(0x02, iocfg0) && read_register(0x08, pktctrl0);
-  marcstate &= 0x1F;
+  radio_known = radio.read_digital_input(radio_input);
   return radio_known;
 }
-bool wait_idle() {
-  const uint32_t start = micros();
-  do {
-    uint8_t state;
-    if (!read_register(0x35, state, true)) return false;
-    if ((state & 0x1F) == 1) return true;
-  } while (static_cast<uint32_t>(micros() - start) < 20000);
-  return false;
-}
 bool reset_radio() {
-  digitalWrite(CS_PIN, HIGH); delayMicroseconds(40);
-  digitalWrite(CS_PIN, LOW); delayMicroseconds(10);
-  digitalWrite(CS_PIN, HIGH); delayMicroseconds(40);
-  uint8_t part, version;
-  return strobe(Strobe::reset) && wait_idle() && strobe(Strobe::idle) &&
-         wait_idle() && read_register(0x30, part, true) &&
-         read_register(0x31, version, true) && part == 0 && (version == 4 || version == 0x14);
+  return radio.reset() && radio.idle() && radio.probe().detected;
 }
 bool digital_input_verified() {
-  return read_radio() && marcstate == 1 && iocfg0 == 0x2E && pktctrl0 == 0x30;
+  // Keep the status snapshot even when the safety check fails.
+  return read_radio() && decltype(radio)::digital_input_valid(radio_input);
 }
 
 bool sampler_quiescent() {
@@ -204,9 +155,9 @@ void queue_report(const char* type) {
   doc["pass"] = !failure && analysis_ready && !analysis.error && continuous_gap_match && cleanup_ok && frames == tx_check::COPIES;
   if (failure) doc["error"] = failure; else doc["error"] = nullptr;
   if (radio_known) {
-    doc["marcstate"] = marcstate;
-    doc["iocfg0"] = iocfg0;
-    doc["pktctrl0"] = pktctrl0;
+    doc["marcstate"] = radio_input.marcstate;
+    doc["iocfg0"] = radio_input.iocfg0;
+    doc["pktctrl0"] = radio_input.pktctrl0;
   } else doc["marcstate"] = nullptr;
   doc["frames"] = frames;
   doc["expected_frames"] = tx_check::COPIES;
@@ -267,7 +218,7 @@ void begin_cleanup(const char* error) {
   if (error && !failure) failure = error;
   tx_error = static_cast<uint8_t>(transmitter.error());
   transmitter.abort(true); // CC1101 remains IDLE; no spin on stalled DMA
-  if (radio_known && iocfg0 == 0x2E) gpio_pull_down(DATA_PIN);
+  if (radio_known && radio_input.iocfg0 == 0x2E) gpio_pull_down(DATA_PIN);
   stop_sampler();
   cleanup_deadline_us = time_us_64() + 20000;
   phase = Phase::cleanup;
@@ -284,8 +235,8 @@ void start_check(bool stress) {
   sampler_started_us = 0;
   usb_stress = stress;
   usb_read_bytes = usb_written_bytes = 0;
-  if (!reset_radio() || !write_register(0x02, 0x2E) || !write_register(0x08, 0x30) ||
-      !strobe(Strobe::idle) || !wait_idle() || !digital_input_verified()) {
+  radio_known = radio.configure_digital_check(radio_input);
+  if (!radio_known) {
     begin_cleanup("radio_input_not_verified"); return;
   }
   // Weak low baseline only AFTER CC1101 is verified HiZ/async/IDLE. No SIO OE.
@@ -312,7 +263,7 @@ void tick_check() {
     const auto state = transmitter.poll();
     if (state == tx::State::idle && sampler_quiescent()) {
       release_sampler();
-      cleanup_ok = strobe(Strobe::idle) && wait_idle() && digital_input_verified();
+      cleanup_ok = radio.idle() && digital_input_verified();
       if (cleanup_ok) gpio_pull_down(DATA_PIN); // preserve low after GPIO release
       else if (!failure) failure = "final_idle_not_verified";
       if (cleanup_ok && gpio_get(DATA_PIN)) {

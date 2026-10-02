@@ -1,4 +1,4 @@
-"""Native port selection, precise USB discovery and physical identity checking."""
+"""Serial path/URL selection, USB discovery and gateway identity checking."""
 
 import re
 
@@ -24,7 +24,8 @@ class X2DConfigFlow(ConfigFlow, domain=DOMAIN):
     _usb_identity: str
 
     async def _identify(self, device: str, expected_id: str | None = None) -> tuple[str, dict]:
-        device = await self.hass.async_add_executor_job(usb.get_serial_by_id, device)
+        if "://" not in device:
+            device = await self.hass.async_add_executor_job(usb.get_serial_by_id, device)
         gateway = await Gateway.open(device, expected_device_id=expected_id)
         try:
             return device, gateway.info
