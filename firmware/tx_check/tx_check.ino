@@ -3,27 +3,27 @@
 #include <USB.h>
 #include <pico/unique_id.h>
 #include <hardware/sync.h>
-#include <types.h>
+#include "serial.h"
 #include <ArduinoJson.h>
 #include "radio_tx.h"
 #include "capture_check.h"
-#include <cc1101.h>
+#include <x2d/cc1101.h>
 #include "radio_bus.h"
 
 namespace {
-namespace tx = ha_x2d::radio::digital_tx;
+namespace tx = x2d::radio::digital_tx;
 constexpr uint8_t MISO_PIN = 16, CS_PIN = 17, SCK_PIN = 18, MOSI_PIN = 19, DATA_PIN = 20;
 constexpr uint32_t SAMPLE_HZ = 400000;
 constexpr size_t CAPTURE_WORDS = 4096, CAPTURE_SAMPLES = CAPTURE_WORDS * 32;
-ha_x2d::rp2040::RadioBus radio_bus;
-ha_x2d::cc1101::Driver<ha_x2d::rp2040::RadioBus, ha_x2d::cc1101::Mode::tx_check> radio(radio_bus);
-ha_x2d::cc1101::DigitalInput radio_input;
+x2d::rp2040::RadioBus radio_bus;
+x2d::cc1101::Driver<x2d::rp2040::RadioBus, x2d::cc1101::Mode::tx_check> radio(radio_bus);
+x2d::cc1101::DigitalInput radio_input;
 enum class Phase : uint8_t { idle, frames, tail, cleanup, blocked };
 Phase phase = Phase::idle;
 tx::Tx transmitter;
-ha_x2d::radio::Waveform wave;
-ha_x2d::LineFramer input(32);
-ha_x2d::OutputBuffer usb_output;
+x2d::radio::Waveform wave;
+x2d::LineFramer input(32);
+x2d::OutputBuffer usb_output;
 char output[4096];
 char serial[17]; // USB core retains this pointer
 alignas(4) uint32_t samples[CAPTURE_WORDS];
@@ -162,7 +162,7 @@ void queue_report(const char* type) {
   } else doc["marcstate"] = nullptr;
   doc["frames"] = frames;
   doc["expected_frames"] = tx_check::COPIES;
-  doc["body_bytes"] = ha_x2d::radio::MAX_BODY_BYTES;
+  doc["body_bytes"] = x2d::radio::MAX_BODY_BYTES;
   doc["payload_source"] = "synthetic_public_vector";
   doc["capture_complete"] = capture_complete;
   doc["confirmed_samples"] = confirmed_words * 32;
@@ -242,12 +242,12 @@ void start_check(bool stress) {
   }
   // Weak low baseline only AFTER CC1101 is verified HiZ/async/IDLE. No SIO OE.
   gpio_pull_down(DATA_PIN);
-  ha_x2d::radio::Body body;
-  ha_x2d::radio::make_body(0xF73192, 4, 6641, &body); // public vector, no journal
-  body.length = ha_x2d::radio::MAX_BODY_BYTES;
-  for (size_t i = ha_x2d::radio::BODY_BYTES; i < body.length; ++i) body.bytes[i] = 0xFF;
+  x2d::radio::Body body;
+  x2d::radio::make_body(0xF73192, 4, 6641, &body); // public vector, no journal
+  body.length = x2d::radio::MAX_BODY_BYTES;
+  for (size_t i = x2d::radio::BODY_BYTES; i < body.length; ++i) body.bytes[i] = 0xFF;
   // Synthetic append is not an enrollment formatter or an authenticated body.
-  if (!ha_x2d::radio::encode_burst(body, tx_check::COPIES, &wave) ||
+  if (!x2d::radio::encode_burst(body, tx_check::COPIES, &wave) ||
       !wave.chip(wave.chips() - 1)) { begin_cleanup("synthetic_body_failed"); return; }
   if (!start_sampler()) { begin_cleanup("sampler_resources"); return; }
   if (!transmitter.start_burst(wave, tx::DEFAULT_CHIP_NS, true)) {
@@ -384,13 +384,13 @@ void loop() {
     const int byte = Serial.read();
     if (byte < 0) break;
     const auto event = input.feed(static_cast<char>(byte));
-    if (event == ha_x2d::LineFramer::Event::none) continue;
-    if (event == ha_x2d::LineFramer::Event::line && input.length == 5 &&
+    if (event == x2d::LineFramer::Event::none) continue;
+    if (event == x2d::LineFramer::Event::line && input.length == 5 &&
         !memcmp(input.data(), "check", 5)) start_check(false);
-    else if (event == ha_x2d::LineFramer::Event::line && input.length == 9 &&
+    else if (event == x2d::LineFramer::Event::line && input.length == 9 &&
              !memcmp(input.data(), "check usb", 9)) start_check(true);
     else {
-      if (event == ha_x2d::LineFramer::Event::line && input.length == 6 &&
+      if (event == x2d::LineFramer::Event::line && input.length == 6 &&
           !memcmp(input.data(), "status", 6)) read_radio();
       else failure = "invalid_command";
       queue_report("status");

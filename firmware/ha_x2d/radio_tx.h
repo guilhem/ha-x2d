@@ -1,6 +1,6 @@
 #pragma once
 
-#include "radio_codec.h"
+#include <x2d/radio_codec.h>
 
 #if defined(ARDUINO_ARCH_RP2040)
 #include <hardware/clocks.h>
@@ -10,7 +10,7 @@
 #include <pico/time.h>
 #endif
 
-namespace ha_x2d {
+namespace x2d {
 namespace radio {
 namespace digital_tx {
 
@@ -392,4 +392,4 @@ class Tx {
 #endif
 }  // namespace digital_tx
 }  // namespace radio
-}  // namespace ha_x2d
+}  // namespace x2d

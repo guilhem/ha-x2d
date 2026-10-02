@@ -9,22 +9,22 @@
 #include <hardware/irq.h>
 #include <pico/time.h>
 
-#include <types.h>
+#include "serial.h"
 #include <ArduinoJson.h>
 #include "capture.h"
-#include <cc1101.h>
+#include <x2d/cc1101.h>
 #include "radio_bus.h"
 
 namespace {
 
 constexpr uint8_t MISO_PIN = 16, CS_PIN = 17, SCK_PIN = 18, MOSI_PIN = 19;
 constexpr uint8_t DATA_PIN = 20, CARRIER_PIN = 21;
-ha_x2d::rp2040::RadioBus radio_bus;
-ha_x2d::cc1101::Driver<ha_x2d::rp2040::RadioBus, ha_x2d::cc1101::Mode::rx_debug> radio(radio_bus);
+x2d::rp2040::RadioBus radio_bus;
+x2d::cc1101::Driver<x2d::rp2040::RadioBus, x2d::cc1101::Mode::rx_debug> radio(radio_bus);
 
 rx_debug::Capture capture;
 rx_debug::Config config;
-ha_x2d::LineFramer input(rx_debug::MAX_INPUT_BYTES);
+x2d::LineFramer input(rx_debug::MAX_INPUT_BYTES);
 char output[rx_debug::MAX_OUTPUT_BYTES];
 size_t output_size = 0, output_sent = 0;
 uint32_t pending_samples = 0, sequence = 0, config_id = 0;
@@ -437,8 +437,8 @@ void loop() {
     const int byte = Serial.read();
     if (byte < 0) { ++serial_read_errors; break; }
     const auto event = input.feed(static_cast<char>(byte));
-    if (event == ha_x2d::LineFramer::Event::none) continue;
-    if (event == ha_x2d::LineFramer::Event::too_long) send_error("line_too_long");
+    if (event == x2d::LineFramer::Event::none) continue;
+    if (event == x2d::LineFramer::Event::too_long) send_error("line_too_long");
     else {
       rx_debug::Config candidate;
       switch (rx_debug::parse(input.data(), input.length, candidate)) {

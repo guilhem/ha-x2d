@@ -1,5 +1,5 @@
 #include "rx_debug/capture.h"
-#include <types.h>
+#include "ha_x2d/serial.h"
 #include <ArduinoJson.h>
 
 #include <assert.h>
@@ -66,7 +66,7 @@ int main() {
   assert(rx_debug::sample_offset_us(240000001, 85120, 133000000) == 600000002);
   assert(rx_debug::sample_offset_us(240000002, 85120, 133000000) == 600000005);
 
-  ha_x2d::LineFramer framer(rx_debug::MAX_INPUT_BYTES);
+  x2d::LineFramer framer(rx_debug::MAX_INPUT_BYTES);
   rx_debug::Config config;
   const char* command = "rx fsk 868350000 38086\r\n";
   for (const char* p = command; *p; ++p) framer.feed(*p);
@@ -91,7 +91,7 @@ int main() {
   assert(rx_debug::parse("status", 6, config) == rx_debug::Command::status);
   assert(rx_debug::parse("stop", 4, config) == rx_debug::Command::stop);
   for (size_t i = 0; i < 512; ++i) framer.feed('x');
-  assert(framer.feed('\n') == ha_x2d::LineFramer::Event::too_long);
+  assert(framer.feed('\n') == x2d::LineFramer::Event::too_long);
   for (const char* p = "status\n"; *p; ++p) framer.feed(*p);
   assert(rx_debug::parse(framer.data(), framer.length, config) == rx_debug::Command::status);
 

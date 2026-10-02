@@ -7,9 +7,9 @@
 
 #include <optional>
 
-#include <cc1101.h>
-#include <mysensors.h>
-#include <journal.h>
+#include <x2d/cc1101.h>
+#include "mysensors.h"
+#include <x2d/journal.h>
 #include "radio_bus.h"
 #include "radio_tx.h"
 
@@ -55,13 +55,13 @@ static_assert(HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER == 0 ||
 constexpr bool TX_ENABLED = HA_X2D_COMMANDS_TX || HA_X2D_SUPERVISED_TX;
 constexpr bool ENROLLMENT_ENABLED = HA_X2D_SUPERVISED_TX;
 
-class BoardFlash final : public ha_x2d::journal::Flash {
+class BoardFlash final : public x2d::journal::Flash {
  public:
   static constexpr uintptr_t ADDRESS = 0x101FF000;
   uint32_t size() const override {
     return reinterpret_cast<uintptr_t>(&_FS_start) == ADDRESS &&
-           reinterpret_cast<uintptr_t>(&_FS_end) >= ADDRESS + ha_x2d::journal::REGION_BYTES
-               ? ha_x2d::journal::REGION_BYTES : 0;
+           reinterpret_cast<uintptr_t>(&_FS_end) >= ADDRESS + x2d::journal::REGION_BYTES
+               ? x2d::journal::REGION_BYTES : 0;
   }
   bool read(uint32_t offset, void* out, uint32_t length) override {
     if (!size() || offset > size() || length > size() - offset) return false;
@@ -87,12 +87,12 @@ class BoardFlash final : public ha_x2d::journal::Flash {
     return true;
   }
 } flash;
-ha_x2d::journal::Journal journal(flash);
+x2d::journal::Journal journal(flash);
 
 char device_id[17];  // the USB core keeps this pointer (setSerialNumber): never a local
 
-ha_x2d::rp2040::RadioBus radio_bus;
-ha_x2d::cc1101::Driver<ha_x2d::rp2040::RadioBus, ha_x2d::cc1101::Mode::gateway> radio(radio_bus);
+x2d::rp2040::RadioBus radio_bus;
+x2d::cc1101::Driver<x2d::rp2040::RadioBus, x2d::cc1101::Mode::gateway> radio(radio_bus);
 
 void hex_id(const uint8_t* bytes, char* destination) {
   const char digits[] = "0123456789ABCDEF";
@@ -108,7 +108,7 @@ void hex_id(const uint8_t* bytes, char* destination) {
 class RadioOutput {
  public:
   bool available() const { return radio.configured(); }
-  bool start_burst(const ha_x2d::radio::Waveform& wave, uint32_t chip_ns,
+  bool start_burst(const x2d::radio::Waveform& wave, uint32_t chip_ns,
                    uint32_t& started_ms) {
     // begin_tx verifies async OOK/no packet engine before it takes the data pin.
     if (!radio.begin_tx()) return false;
@@ -121,17 +121,17 @@ class RadioOutput {
     burst_copies_ = wave.copies();
     return true;
   }
-  ha_x2d::radio::FrameState poll_burst(uint8_t& completed) {
-    using ha_x2d::radio::digital_tx::State;
+  x2d::radio::FrameState poll_burst(uint8_t& completed) {
+    using x2d::radio::digital_tx::State;
     const State state = digital_.poll();
     const uint32_t count = digital_.completed_frames() - burst_baseline_;
-    if (count > burst_copies_) return ha_x2d::radio::FrameState::unknown;
+    if (count > burst_copies_) return x2d::radio::FrameState::unknown;
     completed = count;
     if (state == State::running || state == State::stopping)
-      return ha_x2d::radio::FrameState::busy;
-    if (state == State::frame_boundary) return ha_x2d::radio::FrameState::complete;
+      return x2d::radio::FrameState::busy;
+    if (state == State::frame_boundary) return x2d::radio::FrameState::complete;
     radio.hold_data_low();  // suppress carrier before SPI cleanup
-    return ha_x2d::radio::FrameState::unknown;
+    return x2d::radio::FrameState::unknown;
   }
   void request_stop() { digital_.request_stop(); }
   void end_burst() {
@@ -144,7 +144,7 @@ class RadioOutput {
   }
   void service() { digital_.poll(); }
  private:
-  ha_x2d::radio::digital_tx::Tx digital_;
+  x2d::radio::digital_tx::Tx digital_;
   uint32_t burst_baseline_ = 0;
   uint8_t burst_copies_ = 0;
 } radio_output;
@@ -158,7 +158,7 @@ struct Policy {
   }
 } policy;
 
-using Gateway = ha_x2d::mysensors::Gateway<RadioOutput, Policy>;
+using Gateway = x2d::mysensors::Gateway<RadioOutput, Policy>;
 std::optional<Gateway> gateway;  // identity exists only after boot
 char rx[256];                    // one small USB window; the gateway frames lines
 size_t rx_used = 0, rx_pos = 0;
@@ -195,11 +195,11 @@ void setup() {
   radio.reset();  // CC1101 manual reset; no frequency or transmit registers are set
   if (TX_ENABLED) radio.configure_transmitter();
   gateway.emplace(journal, radio_output, policy, device_id);
-  const ha_x2d::PairingAuthorization trial{
+  const x2d::PairingAuthorization trial{
       HA_X2D_SUPERVISED_TX ? uint8_t{1} : uint8_t{0},
       HA_X2D_TRIAL_SUFFIX, HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER};
   gateway->begin(TX_ENABLED, ENROLLMENT_ENABLED,
-                 ha_x2d::radio::digital_tx::DEFAULT_CHIP_NS, trial);
+                 x2d::radio::digital_tx::DEFAULT_CHIP_NS, trial);
 }
 
 void loop() {
