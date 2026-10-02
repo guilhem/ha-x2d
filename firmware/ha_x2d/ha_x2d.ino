@@ -169,6 +169,9 @@ struct Policy {
   bool authorize_provision(const ha_x2d::journal::Journal&, uint8_t shutter_id) {
     return shutter_id == 1;
   }
+  bool authorize_confirm(const ha_x2d::journal::Journal&, uint8_t shutter_id) {
+    return shutter_id == 1;
+  }
   // Private trial: one attempt at the chosen next counter. The optional C resume
   // consumes 2/3; a reboot never restores consumed counters.
   bool authorize_pair(const ha_x2d::journal::Journal& journal, uint8_t shutter_id) {
