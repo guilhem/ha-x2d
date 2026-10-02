@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "x2d-gateway"
-version = "0.3.0"
+version = "0.3.1"
 description = "Async USB client for the ha-x2d experimental radio gateway"
 requires-python = ">=3.11"
 dependencies = ["serialx>=1.10.0,<2"]

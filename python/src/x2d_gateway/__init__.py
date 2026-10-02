@@ -234,7 +234,7 @@ class Gateway:
         except BaseException as exc:
             self._terminate(exc if isinstance(exc, Exception) else ConnectionError("Request cancelled"))
             await self.close()
-            if tx is not None and isinstance(exc, (OSError, TimeoutError)):
+            if tx is not None and isinstance(exc, (OSError, TimeoutError, ProtocolError)):
                 raise CommandUncertain() from exc
             raise
         finally:

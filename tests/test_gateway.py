@@ -282,7 +282,7 @@ class GatewayChecks(unittest.IsolatedAsyncioTestCase):
                     await gateway.status()
 
     async def test_tx_uncertainty_timeout_unplug_and_cancel_close(self):
-        for failure in ("unknown", "timeout", "unplug", "cancel"):
+        for failure in ("unknown", "timeout", "unplug", "cancel", "protocol"):
             with self.subTest(failure=failure):
                 gateway = await self.open()
                 await gateway.provision(1)
@@ -298,6 +298,8 @@ class GatewayChecks(unittest.IsolatedAsyncioTestCase):
                         task.cancel()
                     elif failure == "unplug":
                         self.peer.unplug()
+                    elif failure == "protocol":
+                        self.peer.send(b"not json\n")
                     with self.assertRaises(asyncio.CancelledError if failure == "cancel" else CommandUncertain):
                         await task
                 self.assertEqual(len(self.peer.requests), start + 1)
@@ -357,8 +359,10 @@ class GatewayChecks(unittest.IsolatedAsyncioTestCase):
                 request = self.peer.requests[-1]
                 event = self.peer.event(event="tx_result", request_id=request["id"], shutter_id=1, result="emitted")
                 self.peer.send({**event, **fields})
-                with self.assertRaises(ProtocolError):
+                with self.assertRaises(CommandUncertain) as raised:
                     await task
+                self.assertIsInstance(raised.exception.__cause__, ProtocolError)
+                self.assertEqual(len(self.peer.requests), start + 1)
                 self.assertTrue(gateway.closed)
                 self.assertEqual(self.peer.shutters[1]["state"], "pending")
                 await gateway.close()
@@ -366,8 +370,9 @@ class GatewayChecks(unittest.IsolatedAsyncioTestCase):
         start = len(self.peer.requests)
         # An event before its ACK is invalid, even with correct IDs and session.
         self.peer.response_filter = lambda request, response: self.peer.event(event="tx_result", request_id=request["id"], shutter_id=1, result="emitted")
-        with self.assertRaises(ProtocolError):
+        with self.assertRaises(CommandUncertain) as raised:
             await gateway.pair(1)
+        self.assertIsInstance(raised.exception.__cause__, ProtocolError)
         self.assertEqual(len(self.peer.requests), start + 1)
 
     async def test_command_ack_loss_and_cancellation_close_siblings(self):

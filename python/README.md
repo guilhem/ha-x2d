@@ -36,7 +36,9 @@ Un refus applicatif valide lève `GatewayError` avec son attribut `code`, sans
 corrompre la session. `ProtocolError` signale des données incompatibles ou
 invalides et ferme la liaison. Timeout, annulation et déconnexion ferment aussi
 la session ; aucune écriture n’est automatiquement réessayée. Un résultat RF
-inconnu ou une commande perdue sur la liaison lève `CommandUncertain`.
+inconnu ou une commande perdue sur la liaison lève `CommandUncertain`, y compris
+si les données USB deviennent invalides après soumission. La cause protocolaire
+reste accessible via `__cause__` ; aucun résultat d'émission n'est supposé.
 `emitted` ne signifie ni réception moteur ni position connue. Les callbacks
 synchrones inscrits via `add_event_callback()` reçoivent uniquement des événements
 validés ; ils doivent rester courts. Leur retour d’inscription permet le retrait.
