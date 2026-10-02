@@ -186,7 +186,7 @@ chaque adresse de l'UF2 avec `tools/check_uf2_layout.py`, puis produit
 Les mises à jour doivent utiliser ce profil et passer cette vérification ;
 un effacement total de flash ou un autre layout détruirait les associations.
 
-[journal.h](../lib/x2d-core/src/journal.h) réserve durablement un compteur par
+[journal.h](https://github.com/guilhem/x2d-core/blob/ef5b86d7a1b965d316d2df2ff536d79db7c8db7e/src/journal.h) réserve durablement un compteur par
 commande logique et interdit son rebouclage. Le backend matériel protège les
 écritures flash par exclusion des IRQ et de l'autre cœur. Les tests natifs
 injectent coupures et corruption, vérifient deux compteurs indépendants et
@@ -194,7 +194,7 @@ la file STOP. Ils ne constituent pas des essais de coupure sur la carte.
 Le codec et ses temporisations sont comparés hors ligne ; aucun scheduler
 PIO d'émission n'est activé sans qualification du profil et de l'association.
 
-Le scheduler [radio_runtime.h](../lib/x2d-core/src/radio_runtime.h) est raccordé au journal,
+Le scheduler [radio_runtime.h](https://github.com/guilhem/x2d-core/blob/ef5b86d7a1b965d316d2df2ff536d79db7c8db7e/src/radio_runtime.h) est raccordé au journal,
 au pilote [radio_tx.h](ha_x2d/radio_tx.h) et aux opérations USB. Ses deux gates
 restent désactivés dans le build distribué. Les actions du cycle B observé
 sont `81` (montée), `82` (descente) et `04` (STOP). Chaque réservation précède
@@ -330,7 +330,7 @@ ce sous-module avant les tests ou les builds :
 git submodule update --init --recursive
 ```
 
-Le [cœur portable](../lib/x2d-core/README.md) possède le codec, le journal,
+Le [cœur portable](https://github.com/guilhem/x2d-core/blob/ef5b86d7a1b965d316d2df2ff536d79db7c8db7e/README.md) possède le codec, le journal,
 l'ordonnanceur STOP, le serveur JSONL v2 et les séquences CC1101. Le sketch
 conserve les adaptateurs USB/SPI/GPIO/flash et PIO/DMA, l'identité, le hasard,
 la calibration et la politique d'autorisation des profils. La région du journal
