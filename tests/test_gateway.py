@@ -1,4 +1,4 @@
-"""Real serialx transport on Linux PTYs, never physical USB/RF."""
+"""Real serialx transport on Linux PTYs and TCP, never physical USB/RF."""
 
 import asyncio
 from copy import deepcopy
@@ -36,6 +36,10 @@ class SimulatedGateway:
         tty.setraw(self.slave)
         os.set_blocking(self.master, False)
         self.device = os.ttyname(self.slave)
+        self._init_state()
+        self.loop.add_reader(self.master, self._read)
+
+    def _init_state(self):
         self.info = deepcopy(INFO)
         self.status = deepcopy(STATUS)
         self.shutters = {}
@@ -45,7 +49,6 @@ class SimulatedGateway:
         self.auto_tx = True
         self.response_filter = lambda request, response: response
         self.loop = asyncio.get_running_loop()
-        self.loop.add_reader(self.master, self._read)
 
     def _read(self):
         try:
@@ -54,21 +57,23 @@ class SimulatedGateway:
             return
         while b"\n" in self.buffer:
             line, self.buffer = self.buffer.split(b"\n", 1)
-            request = json.loads(line)
-            self.requests.append(request)
-            assert request["v"] == 2
-            assert set(request) == ({"v", "id", "op"} if request["op"] == "hello" else {"v", "id", "op", "session", "args"})
-            if request["op"] != "hello":
-                assert request["session"] == self.info["session"]
-            result, error = self._operate(request)
-            response = {"v": 2, "id": request["id"], "ok": error is None}
-            response.update({"result": result} if error is None else {"error": error})
-            response = self.response_filter(request, response)
-            if response is None:
-                continue
-            self.send(response)
-            if self.auto_tx and error is None and request["op"] in ("pair", "command"):
-                self.loop.call_soon(self.tx_result, request)
+            self._respond(json.loads(line))
+
+    def _respond(self, request):
+        self.requests.append(request)
+        assert request["v"] == 2
+        assert set(request) == ({"v", "id", "op"} if request["op"] == "hello" else {"v", "id", "op", "session", "args"})
+        if request["op"] != "hello":
+            assert request["session"] == self.info["session"]
+        result, error = self._operate(request)
+        response = {"v": 2, "id": request["id"], "ok": error is None}
+        response.update({"result": result} if error is None else {"error": error})
+        response = self.response_filter(request, response)
+        if response is None:
+            return
+        self.send(response)
+        if self.auto_tx and error is None and request["op"] in ("pair", "command"):
+            self.loop.call_soon(self.tx_result, request)
 
     def _operate(self, request):
         op = request["op"]
@@ -124,6 +129,55 @@ class SimulatedGateway:
     def close(self):
         self.unplug()
         os.close(self.slave)
+
+
+class SimulatedTCPGateway(SimulatedGateway):
+    """Same v2 contract simulator, served on a real loopback TCP socket."""
+
+    def __init__(self):
+        self._init_state()
+        # ponytail: one active owner; use per-connection peers for multi-client tests.
+        self.writer = None
+        self.connections = set()
+        self.handlers = set()
+
+    @classmethod
+    async def start(cls):
+        peer = cls()
+        peer.server = await asyncio.start_server(peer._serve, "127.0.0.1", 0)
+        peer.device = f"socket://127.0.0.1:{peer.server.sockets[0].getsockname()[1]}"
+        return peer
+
+    async def _serve(self, reader, writer):
+        task = asyncio.current_task()
+        self.handlers.add(task)
+        self.connections.add(writer)
+        self.writer = writer
+        try:
+            while line := await reader.readline():
+                self._respond(json.loads(line))
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            self.connections.discard(writer)
+            self.handlers.discard(task)
+            if self.writer is writer:
+                self.writer = None
+
+    def send(self, message):
+        if self.writer is not None and not self.writer.is_closing():
+            data = message if isinstance(message, bytes) else json.dumps(message).encode() + b"\n"
+            self.writer.write(data)
+
+    def unplug(self):
+        for writer in self.connections:
+            writer.close()
+
+    async def aclose(self):
+        self.server.close()
+        await self.server.wait_closed()
+        self.unplug()
+        await asyncio.gather(*self.handlers)
 
 
 async def wait_requests(peer, count):
@@ -466,6 +520,98 @@ class GatewayChecks(unittest.IsolatedAsyncioTestCase):
         async with asyncio.timeout(1):
             while not gateway.closed:
                 await asyncio.sleep(0.001)
+
+
+class TCPGatewayChecks(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.peer = await SimulatedTCPGateway.start()
+        self.gateway = None
+        self.loop_errors = []
+        asyncio.get_running_loop().set_exception_handler(lambda loop, context: self.loop_errors.append(context))
+
+    async def asyncTearDown(self):
+        if self.gateway is not None:
+            await self.gateway.close()
+        await self.peer.aclose()
+        self.assertEqual(self.loop_errors, [], self.loop_errors)
+
+    async def test_socket_and_tcp_urls_identification_and_capabilities(self):
+        for scheme in ("socket", "tcp"):
+            with self.subTest(scheme=scheme):
+                device = self.peer.device.replace("socket://", f"{scheme}://")
+                self.peer.info["capabilities"] = ["status", "shutters"]
+                self.gateway = await Gateway.open(device, expected_device_id=IDENTITY)
+                self.assertEqual(self.gateway.info, self.peer.info)
+                self.assertEqual(await self.gateway.status(), STATUS)
+                self.assertEqual(await self.gateway.shutters(), {"generation": GENERATION, "shutters": []})
+                await self.gateway.close()
+                with self.assertRaisesRegex(ProtocolError, "Different gateway"):
+                    await Gateway.open(device, expected_device_id="FFFFFFFFFFFFFFFF")
+        self.assertFalse(any(r["op"] not in ("hello", "status", "shutters") for r in self.peer.requests))
+
+    async def test_fragmented_reply_and_interleaved_events(self):
+        self.gateway = await Gateway.open(self.peer.device)
+        events = []
+        self.gateway.add_event_callback(events.append)
+        self.peer.response_filter = lambda request, response: None
+        first = asyncio.create_task(self.gateway.status())
+        second = asyncio.create_task(self.gateway.shutters())
+        await wait_requests(self.peer, 3)
+        for request in reversed(self.peer.requests[-2:]):
+            self.peer.send(self.peer.event(event="rx", identity="ABCDEF", action="stop", counter=1))
+            result = STATUS if request["op"] == "status" else {"generation": GENERATION, "shutters": []}
+            data = json.dumps({"v": 2, "id": request["id"], "ok": True, "result": result}).encode() + b"\r\n"
+            self.peer.send(data[:9])
+            await asyncio.sleep(0.001)
+            self.assertFalse(first.done())
+            self.peer.send(data[9:])
+        self.assertEqual(await first, STATUS)
+        self.assertEqual(await second, {"generation": GENERATION, "shutters": []})
+        self.assertEqual([e["seq"] for e in events], [1, 2])
+
+    async def test_stop_while_open_waits_then_disconnect_is_uncertain_without_replay(self):
+        self.peer.shutters = {1: {"shutter_id": 1, "state": "paired", "last_command": None}}
+        self.peer.auto_tx = False
+        self.gateway = await Gateway.open(self.peer.device)
+        opening = asyncio.create_task(self.gateway.command(1, "open"))
+        await wait_requests(self.peer, 2)
+        open_request = self.peer.requests[-1]
+        stopping = asyncio.create_task(self.gateway.command(1, "stop"))
+        await wait_requests(self.peer, 3)
+        self.peer.tx_result(self.peer.requests[-1])
+        self.assertEqual((await stopping)["result"], "emitted")
+        self.assertFalse(opening.done())
+        self.peer.unplug()
+        with self.assertRaises(CommandUncertain):
+            await opening
+        self.assertTrue(self.gateway.closed)
+        self.assertEqual(open_request["args"], {"shutter_id": 1, "action": "open"})
+        await self.gateway.close()
+        start = len(self.peer.requests)
+        self.peer.info["session"] = "BBBBBBBBBBBBBBBB"
+        self.gateway = await Gateway.open(self.peer.device, expected_device_id=IDENTITY)
+        await self.gateway.status()
+        self.assertEqual((await self.gateway.shutters())["shutters"][0]["last_command"], "stop")
+        self.assertEqual([r["op"] for r in self.peer.requests[start:]], ["hello", "status", "shutters"])
+
+    async def test_command_ack_loss_and_truncated_reply_are_uncertain_without_retry(self):
+        self.peer.shutters = {1: {"shutter_id": 1, "state": "paired", "last_command": None}}
+        for response in (None, b'{"v":2'):
+            with self.subTest(response=response):
+                self.peer.response_filter = lambda request, reply: reply
+                self.gateway = await Gateway.open(self.peer.device)
+                self.peer.response_filter = lambda request, reply: response
+                start = len(self.peer.requests)
+                with patch.object(x2d_gateway, "TIMEOUT", 0.05):
+                    command = asyncio.create_task(self.gateway.command(1, "open"))
+                    await wait_requests(self.peer, start + 1)
+                    if response is not None:
+                        self.peer.unplug()
+                    with self.assertRaises(CommandUncertain):
+                        await command
+                self.assertTrue(self.gateway.closed)
+                self.assertEqual(len(self.peer.requests), start + 1)
+                await self.gateway.close()
 
 
 if __name__ == "__main__":

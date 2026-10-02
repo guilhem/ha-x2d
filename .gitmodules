@@ -1,0 +1,3 @@
+[submodule "lib/x2d-core"]
+	path = lib/x2d-core
+	url = https://github.com/guilhem/x2d-core.git

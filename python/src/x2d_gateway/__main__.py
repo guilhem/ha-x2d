@@ -1,4 +1,4 @@
-"""Read-only diagnostic CLI: python -m x2d_gateway /dev/serial/by-id/…"""
+"""Read-only gateway diagnostics over a serial path or serialx URL."""
 
 import argparse
 import asyncio
@@ -17,7 +17,7 @@ async def inspect(device: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("device", help="USB serial port (one owner at a time)")
+    parser.add_argument("device", help="Serial path or serialx URL, e.g. socket://host:port (one owner at a time)")
     args = parser.parse_args()
     try:
         asyncio.run(inspect(args.device))

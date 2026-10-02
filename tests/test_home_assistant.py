@@ -25,7 +25,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry, entity_registry, frame, translation
 from homeassistant.helpers.service_info.usb import UsbServiceInfo
 
-from test_gateway import IDENTITY, GENERATION, SimulatedGateway
+from test_gateway import IDENTITY, GENERATION, SimulatedGateway, SimulatedTCPGateway, wait_requests
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -94,8 +94,8 @@ class PackagingChecks(unittest.TestCase):
 
 
 @contextlib.asynccontextmanager
-async def home_assistant():
-    """Real HA Core loading the packaged component; the only USB device is a PTY."""
+async def home_assistant(*, tcp=False):
+    """Real HA Core loading the packaged component against a PTY or TCP peer."""
     with tempfile.TemporaryDirectory(prefix="ha-x2d-check-") as directory:
         config = Path(directory)
         with ZipFile(build(config, hacs=True)) as bundle:
@@ -112,13 +112,16 @@ async def home_assistant():
         await hass.config_entries.async_initialize()
         await device_registry.async_load(hass)
         await entity_registry.async_load(hass)
-        peer = SimulatedGateway()
+        peer = await SimulatedTCPGateway.start() if tcp else SimulatedGateway()
         try:
             with patch("homeassistant.components.usb.async_setup", AsyncMock(return_value=True)):
                 yield hass, peer
         finally:
-            peer.close()
             await hass.async_stop(force=True)
+            if tcp:
+                await peer.aclose()
+            else:
+                peer.close()
             sys.path.remove(directory)
             for name in list(sys.modules):
                 if name == "custom_components" or name.startswith("custom_components."):
@@ -165,13 +168,141 @@ class RecordedShutterChecks(unittest.IsolatedAsyncioTestCase):
         key = next((k for k in schema if k.schema == "shutter_id"), None)
         return None if key is None else schema[key].container
 
+    async def test_network_configuration_reconnect_identity_and_diagnostics(self):
+        async with home_assistant(tcp=True) as (hass, peer):
+            peer.info["capabilities"] = COMMANDS_ONLY
+            peer.shutters = {1: paired(1, "close")}
+            with patch("homeassistant.components.usb.get_serial_by_id", side_effect=AssertionError("URL resolved as USB")):
+                entry = await self.add_gateway(hass, peer)
+                self.assertEqual(dict(entry.data), {"device": peer.device})
+                self.assertEqual(entry.title, f"X2D Gateway {IDENTITY[-6:]}")
+                await self.adopt(hass, await self.offer(hass, entry), "stop", name="Network shutter")
+                coordinator = entry.runtime_data
+                registry = entity_registry.async_get(hass)
+                entities = entity_registry.async_entries_for_config_entry(registry, entry.entry_id)
+                cover = next(e for e in entities if e.domain == "cover")
+                identities = {e.entity_id: e.unique_id for e in entities}
+                subentries = dict(entry.subentries)
+                self.assertEqual(cover.unique_id, f"{IDENTITY}_{GENERATION}_1")
+
+                # Losing the link after ACK leaves the command uncertain; even
+                # the command's final diagnostic refresh must never replay it.
+                peer.auto_tx = False
+                start = len(peer.requests)
+                opening = asyncio.create_task(hass.services.async_call(
+                    "cover", "open_cover", {"entity_id": cover.entity_id}, blocking=True))
+                await wait_requests(peer, start + 1)
+                self.assertEqual(peer.requests[-1]["args"], {"shutter_id": 1, "action": "open"})
+                peer.info["device_id"] = "FFFFFFFFFFFFFFFF"
+                peer.unplug()
+                with self.assertRaisesRegex(Exception, "command_uncertain"):
+                    await opening
+                self.assertFalse(coordinator.last_update_success)
+                self.assertIsNone(coordinator.gateway)
+                self.assertEqual(hass.states.get(cover.entity_id).state, "unavailable")
+                await coordinator.async_refresh()
+                self.assertFalse(coordinator.last_update_success)  # wrong identity still rejected
+
+                peer.info.update(device_id=IDENTITY, session="BBBBBBBBBBBBBBBB", firmware="portable-test")
+                peer.info["capabilities"] = ["status", "shutters"]
+                await coordinator.async_refresh()
+                self.assertTrue(coordinator.last_update_success)
+                self.assertEqual(coordinator.info, peer.info)
+                self.assertFalse(coordinator.ready(1, GENERATION))  # capabilities from the new hello
+                await coordinator.gateway.close()
+                peer.info["capabilities"] = COMMANDS_ONLY
+                await coordinator.async_refresh()
+                self.assertTrue(coordinator.ready(1, GENERATION))
+                self.assertEqual(hass.states.get(cover.entity_id).state, "unknown")
+                self.assertEqual(dict(entry.subentries), subentries)
+                self.assertEqual({e.entity_id: e.unique_id for e in
+                                  entity_registry.async_entries_for_config_entry(registry, entry.entry_id)}, identities)
+                self.assertEqual([r["op"] for r in peer.requests[start:]].count("command"), 1)
+                self.assertFalse(any(r["op"] in self.ops for r in peer.requests))
+
+                diagnostics = importlib.import_module("custom_components.x2d.diagnostics")
+                exported = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+                self.assertNotIn("hardware", exported)
+                self.assertEqual(exported["info"]["firmware"], "portable-test")
+                self.assertEqual(exported["info"]["capabilities"], COMMANDS_ONLY)
+                for private in (IDENTITY, GENERATION, peer.info["session"], peer.device, "RP2040"):
+                    self.assertNotIn(private, json.dumps(exported))
+                peer.status["storage"]["generation"] = "3333333344444444"
+                await coordinator.async_refresh()
+                self.assertFalse(coordinator.ready(1, GENERATION))
+                self.assertEqual(hass.states.get(cover.entity_id).state, "unavailable")
+                self.assertTrue(await hass.config_entries.async_unload(entry.entry_id))
+                self.assertIsNone(coordinator.gateway)
+
+    async def test_reconfigure_local_and_network_preserves_shutter_references(self):
+        async with home_assistant() as (hass, peer):
+            peer.info["capabilities"] = COMMANDS_ONLY
+            peer.shutters = {1: paired(1)}
+            # The local path is resolved before hello and the resolved value is saved.
+            with patch("homeassistant.components.usb.get_serial_by_id", return_value=peer.device) as resolve:
+                flow = await hass.config_entries.flow.async_init("x2d", context={"source": "user"})
+                result = await hass.config_entries.flow.async_configure(flow["flow_id"], {"device": "/dev/ttyACM-test"})
+                resolve.assert_called_once_with("/dev/ttyACM-test")
+            self.assertEqual(result["type"], "create_entry", result)
+            entry = result["result"]
+            await hass.async_block_till_done()
+            await self.adopt(hass, await self.offer(hass, entry), "stop", name="Living room")
+            hass.config_entries.async_update_entry(entry, title="My gateway")
+            await hass.async_block_till_done()
+            registry = entity_registry.async_get(hass)
+            identities = {e.entity_id: e.unique_id for e in
+                          entity_registry.async_entries_for_config_entry(registry, entry.entry_id)}
+            subentries = dict(entry.subentries)
+            network = await SimulatedTCPGateway.start()
+            network.shutters = deepcopy(peer.shutters)
+            network.info["capabilities"] = COMMANDS_ONLY
+            try:
+                flow = await hass.config_entries.flow.async_init(
+                    "x2d", context={"source": "reconfigure", "entry_id": entry.entry_id})
+                self.assertEqual(flow["step_id"], "reconfigure")
+                with patch("homeassistant.components.usb.get_serial_by_id", side_effect=AssertionError("URL resolved as USB")):
+                    result = await hass.config_entries.flow.async_configure(
+                        flow["flow_id"], {"device": "socket://127.0.0.1:not-a-port"})
+                    self.assertEqual(result["errors"], {"base": "cannot_connect"})
+                    network.info["device_id"] = "FFFFFFFFFFFFFFFF"
+                    result = await hass.config_entries.flow.async_configure(flow["flow_id"], {"device": network.device})
+                    self.assertEqual(result["errors"], {"base": "invalid_gateway"})
+                    self.assertEqual(entry.data["device"], peer.device)
+                    self.assertTrue(entry.runtime_data.ready(1, GENERATION))
+                    network.info["device_id"] = IDENTITY
+                    result = await hass.config_entries.flow.async_configure(flow["flow_id"], {"device": network.device})
+                    self.assertEqual(result["reason"], "reconfigure_successful")
+                    await hass.async_block_till_done()
+                self.assertEqual((entry.title, entry.unique_id, entry.data["device"]), ("My gateway", IDENTITY, network.device))
+                self.assertEqual(dict(entry.subentries), subentries)
+                self.assertTrue(entry.runtime_data.ready(1, GENERATION))
+                self.assertEqual({e.entity_id: e.unique_id for e in
+                                  entity_registry.async_entries_for_config_entry(registry, entry.entry_id)}, identities)
+                self.assertFalse(any(r["op"] in self.ops | {"command"} for r in network.requests))
+                self.assertEqual(entry.state, ConfigEntryState.LOADED)
+
+                # Returning to a local path uses the same resolver and identity check.
+                flow = await hass.config_entries.flow.async_init(
+                    "x2d", context={"source": "reconfigure", "entry_id": entry.entry_id})
+                with patch("homeassistant.components.usb.get_serial_by_id", return_value=peer.device) as resolve:
+                    result = await hass.config_entries.flow.async_configure(flow["flow_id"], {"device": "/dev/ttyACM-test"})
+                    resolve.assert_called_once_with("/dev/ttyACM-test")
+                self.assertEqual(result["reason"], "reconfigure_successful")
+                await hass.async_block_till_done()
+                self.assertEqual(entry.data["device"], peer.device)
+                self.assertTrue(entry.runtime_data.ready(1, GENERATION))
+                self.assertEqual({e.entity_id: e.unique_id for e in
+                                  entity_registry.async_entries_for_config_entry(registry, entry.entry_id)}, identities)
+            finally:
+                await network.aclose()
+
     async def test_one_recorded_shutter_is_selected_with_a_name_only_form(self):
         async with home_assistant() as (hass, peer):
             peer.info["capabilities"] = COMMANDS_ONLY
             peer.shutters = {3: {"shutter_id": 3, "state": "pending", "last_command": None},
                              5: paired(5, "open")}
             entry = await self.add_gateway(hass, peer)
-            self.assertEqual(entry.title, f"X2D USB Gateway {IDENTITY[-6:]}")
+            self.assertEqual(entry.title, f"X2D Gateway {IDENTITY[-6:]}")
             start = len(peer.requests)
             for language, label in (("en", "Recorded shutter 5 (last command: open)"),
                                     ("fr", "Volet enregistré 5 (dernière commande : montée)")):
@@ -260,7 +391,7 @@ class RecordedShutterChecks(unittest.IsolatedAsyncioTestCase):
             dev_reg, ent_reg = device_registry.async_get(hass), entity_registry.async_get(hass)
             gateway = dev_reg.async_get_device_by_identifier(("x2d", IDENTITY), entry.entry_id)
             self.assertEqual((gateway.name, gateway.manufacturer, gateway.model, gateway.sw_version),
-                             (entry.title, "ha-x2d", "X2D USB Gateway", "0.3.0"))
+                             (entry.title, "ha-x2d", "X2D Gateway", "0.3.0"))
             self.assertIsNone(gateway.hw_version)
             entities = entity_registry.async_entries_for_config_entry(ent_reg, entry.entry_id)
             covers = {e.unique_id: e for e in entities if e.domain == "cover"}
@@ -276,8 +407,7 @@ class RecordedShutterChecks(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("RP2040", f"{device.model} {device.hw_version} {device.name}")
                 self.assertNotIn("CC1101", f"{device.model} {device.hw_version} {device.name}")
             diagnostics = importlib.import_module("custom_components.x2d.diagnostics")
-            self.assertEqual((await diagnostics.async_get_config_entry_diagnostics(hass, entry))["hardware"],
-                             "YD-RP2040 / CC1101")
+            self.assertNotIn("hardware", await diagnostics.async_get_config_entry_diagnostics(hass, entry))
 
             async def send(slot, service):
                 start = len(peer.requests)
@@ -332,10 +462,11 @@ class RecordedShutterChecks(unittest.IsolatedAsyncioTestCase):
         subentry = {"subentry_id": "01SUBENTRYVOLETC00000000001", "subentry_type": "shutter",
                     "title": "Volet C", "unique_id": f"{GENERATION}_1",
                     "data": {"shutter_id": 1, "state_generation": GENERATION}}
-        for title, expected in ((OLD_TITLE, f"X2D USB Gateway {IDENTITY[-6:]}"),
+        for title, expected in ((OLD_TITLE, f"X2D Gateway {IDENTITY[-6:]}"),
                                 ("Roof gateway", "Roof gateway"),
                                 ("X2D USB 123456", "X2D USB 123456"),
-                                (f"X2D USB Gateway {IDENTITY[-6:]}", f"X2D USB Gateway {IDENTITY[-6:]}")):
+                                (f"X2D USB Gateway {IDENTITY[-6:]}", f"X2D Gateway {IDENTITY[-6:]}"),
+                                (f"X2D Gateway {IDENTITY[-6:]}", f"X2D Gateway {IDENTITY[-6:]}")):
             with self.subTest(title=title):
                 async with home_assistant() as (hass, peer):
                     peer.info["capabilities"] = COMMANDS_ONLY
@@ -373,7 +504,7 @@ class RecordedShutterChecks(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(len(device_registry.async_entries_for_config_entry(dev_reg, entry.entry_id)), 2)
                     upgraded = dev_reg.async_get(gateway.id)
                     self.assertEqual((upgraded.name, upgraded.name_by_user, upgraded.model),
-                                     (entry.title, "Passerelle salon", "X2D USB Gateway"))
+                                     (entry.title, "Passerelle salon", "X2D Gateway"))
                     child = dev_reg.async_get(shutter.id)
                     self.assertEqual((child.name, child.name_by_user, child.via_device_id),
                                      ("Volet C", "Volet du salon", gateway.id))

@@ -25,13 +25,14 @@ The first target is the France Fermetures / Well’com shutter under study.
 Its observed C cycle works with asynchronous OOK. Enrollment for other motors
 and their identity format still need physical evidence.
 
-## Three parts, one gateway
+## Gateway components
 
 | Component | Responsibility |
 | --- | --- |
 | [Home Assistant integration](home_assistant/README.md) | Gateway setup, shutter subentries and diagnostics. |
-| [Python client](python/README.md) | Async USB communication, usable independently of HA. |
-| [RP2040 firmware](firmware/README.md) | USB contract, radio codec and durable counter journal. |
+| [Python client](python/README.md) | Async serial communication over USB or serial URLs, usable independently of HA. |
+| [Portable X2D core](https://github.com/guilhem/x2d-core) | Radio codec, durable counter journal, scheduler and JSONL gateway. |
+| [RP2040 firmware](firmware/README.md) | USB, flash, SPI/GPIO and PIO/DMA adapters. |
 
 ## Try it locally
 
@@ -39,6 +40,7 @@ On **Linux with glibc**, install [devenv](https://devenv.sh/getting-started/)
 and its Nix prerequisite, then run from the repository root:
 
 ```sh
+git submodule update --init --recursive
 devenv shell
 devenv test
 ```
@@ -67,7 +69,7 @@ release. HACS manages the integration files; keep the existing X2D entry and
 shutters when moving from a manual installation. See the
 [installation and update guide](home_assistant/README.md).
 
-Home Assistant represents the dongle as an **X2D USB Gateway** and each shutter
+Home Assistant represents the dongle as an **X2D Gateway** and each shutter
 as a separate connected device. With the commands-only firmware, adding a
 shutter recovers an existing paired identity from the dongle. A single available
 identity is selected automatically; multiple identities are listed explicitly.
@@ -80,7 +82,7 @@ remain separate qualification steps.
 
 [Architecture and trade-offs](docs/EXPLORATION.md) ·
 [Radio observations](docs/OBSERVATIONS_RADIO.md) ·
-[USB protocol](docs/USB_PROTOCOL.md)
+[Gateway protocol](docs/USB_PROTOCOL.md)
 
 Research notes are in French. The [public-sample checks](research/verify_public_samples.py)
 include code adapted from mr-sven under [Apache-2.0](research/LICENSE-APACHE).

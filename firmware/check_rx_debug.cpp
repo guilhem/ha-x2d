@@ -1,5 +1,5 @@
 #include "rx_debug/capture.h"
-#include "ha_x2d/protocol.h"
+#include "protocol.h"
 
 #include <assert.h>
 

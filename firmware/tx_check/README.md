@@ -55,7 +55,7 @@ arduino-cli compile --profile yd-rp2040-4mb-journal --warnings all \
   --output-dir /tmp/ha-x2d-tx-check-output firmware/tx_check
 python tools/check_uf2_layout.py /tmp/ha-x2d-tx-check-output/tx_check.ino.uf2
 g++ -std=c++17 -O2 -Wall -Wextra -Werror \
-  firmware/tx_check/check_capture.cpp -o /tmp/check_tx_capture
+  -Ilib/x2d-core/src firmware/tx_check/check_capture.cpp -o /tmp/check_tx_capture
 /tmp/check_tx_capture
 ```
 

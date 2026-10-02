@@ -1,4 +1,4 @@
-"""One USB owner shared by diagnostic entities and shutter subentries."""
+"""One connection shared by diagnostic entities and shutter subentries."""
 
 from datetime import timedelta
 import logging
@@ -17,7 +17,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def default_title(device_id: str) -> str:
-    return f"X2D USB Gateway {device_id[-6:]}"
+    return f"X2D Gateway {device_id[-6:]}"
 
 
 class GatewayCoordinator(DataUpdateCoordinator[dict]):
@@ -87,8 +87,10 @@ class GatewayCoordinator(DataUpdateCoordinator[dict]):
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    # 0.3.0 titled entries "X2D USB {suffix}"; rename only that exact default.
-    if entry.unique_id and entry.title == f"X2D USB {entry.unique_id[-6:]}":
+    # Rename previous default titles; retain names chosen by the user.
+    if entry.unique_id and entry.title in (
+        f"X2D USB {entry.unique_id[-6:]}", f"X2D USB Gateway {entry.unique_id[-6:]}"
+    ):
         hass.config_entries.async_update_entry(entry, title=default_title(entry.unique_id))
     coordinator = GatewayCoordinator(hass, entry)
     entry.runtime_data = coordinator
@@ -98,7 +100,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator.device_id = device_registry.async_get(hass).async_get_or_create(
             config_entry_id=entry.entry_id,
             identifiers={(DOMAIN, coordinator.info["device_id"])},
-            name=entry.title, manufacturer="ha-x2d", model="X2D USB Gateway",
+            name=entry.title, manufacturer="ha-x2d", model="X2D Gateway",
             sw_version=coordinator.info["firmware"],
         ).id
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

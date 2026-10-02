@@ -9,7 +9,7 @@ let
 in
 {
   # Use the native CLI on glibc Linux; its FHS wrapper requires user namespaces.
-  packages = [ (pkgs.arduino-cli.pureGoPkg or pkgs.arduino-cli) pkgs.gcc ];
+  packages = [ (pkgs.arduino-cli.pureGoPkg or pkgs.arduino-cli) pkgs.gcc pkgs.cmake ];
 
   languages.python = {
     enable = true;
@@ -31,7 +31,7 @@ in
   tasks = {
     "test:python" = {
       description = "Run USB client and Home Assistant tests with simulated hardware";
-      after = [ "devenv:python:uv" ];
+      after = [ "devenv:python:uv" "firmware:check" ];
       before = [ "devenv:enterTest" ];
       exec = ''
         cd "${config.devenv.root}"
@@ -46,25 +46,18 @@ in
         cd "${config.devenv.root}"
         mkdir -p build/firmware-check/include
         ln -sf "${arduinoJson}" build/firmware-check/include/ArduinoJson.h
+        cmake --fresh -S lib/x2d-core -B build/x2d-core \
+          -DARDUINOJSON_INCLUDE_DIR="$PWD/build/firmware-check/include"
+        cmake --build build/x2d-core -j2
+        ctest --test-dir build/x2d-core --output-on-failure
         g++ -std=c++17 -Wall -Wextra -Werror \
-          -Ibuild/firmware-check/include firmware/check_protocol.cpp \
-          -o build/firmware-check/check_protocol
-        build/firmware-check/check_protocol
-        g++ -std=c++17 -Wall -Wextra -Werror \
-          firmware/check_radio.cpp -o build/firmware-check/check_radio
-        build/firmware-check/check_radio
-        g++ -std=c++17 -Wall -Wextra -Werror \
-          -Ibuild/firmware-check/include firmware/check_radio_runtime.cpp \
-          -o build/firmware-check/check_radio_runtime
-        build/firmware-check/check_radio_runtime
-        g++ -std=c++17 -Wall -Wextra -Werror \
-          firmware/check_radio_tx.cpp -o build/firmware-check/check_radio_tx
+          -Ilib/x2d-core/src firmware/check_radio_tx.cpp -o build/firmware-check/check_radio_tx
         build/firmware-check/check_radio_tx
         g++ -std=c++17 -Wall -Wextra -Werror \
-          firmware/tx_check/check_capture.cpp -o build/firmware-check/check_tx_capture
+          -Ilib/x2d-core/src firmware/tx_check/check_capture.cpp -o build/firmware-check/check_tx_capture
         build/firmware-check/check_tx_capture
         g++ -std=c++17 -Wall -Wextra -Werror \
-          -Ibuild/firmware-check/include firmware/check_rx_debug.cpp \
+          -Ibuild/firmware-check/include -Ilib/x2d-core/src firmware/check_rx_debug.cpp \
           -o build/firmware-check/check_rx_debug
         build/firmware-check/check_rx_debug
         python tools/check_uf2_layout.py
