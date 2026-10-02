@@ -25,8 +25,8 @@ g++ -std=c++17 -Wall -Wextra -Werror \
 build/rx-debug/check_rx_debug
 ```
 
-UF2 : `build/rx-debug/rx_debug.ino.uf2`. Le lien `sketch.yaml`
-réutilise Arduino-Pico **6.1.1**, ArduinoJson **7.4.3** et le framer existants.
+UF2 : `build/rx-debug/rx_debug.ino.uf2`. Le profil debug `sketch.yaml` utilise Arduino-Pico **6.1.1**, ArduinoJson
+**7.4.3** et le framer partagé ; le profil gateway MySensors ne charge pas JSON.
 La flash physique observée est **4 MiB** ; ce build réserve la même zone de
 journal que la passerelle, sans l’utiliser ni monter de système de fichiers.
 `devenv tasks run firmware:rx-debug-build` vérifie aussi la protection UF2.
@@ -157,127 +157,82 @@ des télécommandes. À la fin, la radio est en IDLE, RX et TX désactivés.
 Ces essais valident la capture et le décodage hors ligne de STOP ; l'émission,
 l'association et la commande effective d'un volet restent à tester.
 
-## Passerelle USB v2 — qualification radio incomplète
+## MySensors USB gateway — experimental RF
 
-Le sketch [ha_x2d/ha_x2d.ino](ha_x2d/ha_x2d.ino) remplace le diagnostic v1,
-sans compatibilité. Le [contrat USB v2](../docs/USB_PROTOCOL.md) définit les
-réponses, événements et erreurs des trois composants.
-
-Le build **0.3.0** annonce uniquement `status` et `shutters`. Il identifie la
-carte, son CC1101 et l'état du journal. Il lit les slots existants ; toutes les
-nouvelles allocations et émissions renvoient `profile_unverified`. Le format
-d'identité accepté, le compteur initial et les trames d'association restent
-à établir. Aucun compteur inventé, formatage ni émission au démarrage.
-Le sketch RX debug demeure l'outil de capture pendant cette qualification.
+[ha_x2d/ha_x2d.ino](ha_x2d/ha_x2d.ino) uses the native MySensors 2.x serial
+protocol at 115200 baud. Read the [migration guide](../home_assistant/README.md)
+before upgrading a JSONL dongle. The gateway no longer needs ArduinoJson; the
+separate passive RX sketch still does.
 
 ```sh
+git submodule update --init --recursive
+devenv shell
 devenv test
 devenv tasks run firmware:build
-devenv tasks run ha:package
-```
-
-Profil matériel `yd-rp2040-4mb-journal` : YD-RP2040, flash **4 MiB observée**,
-Arduino-Pico **6.1.1**, ArduinoJson **7.4.3**. La réservation linker de 2 MiB
-pour FS empêche le sketch d'occuper le journal brut de **64 KiB**, à l'adresse
-`0x101FF000` (`_FS_start`). **Ne jamais monter/formater LittleFS** sur cette
-zone. Le firmware refuse un emplacement linker différent. Le build vérifie
-chaque adresse de l'UF2 avec `tools/check_uf2_layout.py`, puis produit
-`dist/ha_x2d-0.3.0-yd-rp2040-4mb-UNQUALIFIED-RADIO.uf2`.
-Les mises à jour doivent utiliser ce profil et passer cette vérification ;
-un effacement total de flash ou un autre layout détruirait les associations.
-
-[journal.h](https://github.com/guilhem/x2d-core/blob/ef5b86d7a1b965d316d2df2ff536d79db7c8db7e/src/journal.h) réserve durablement un compteur par
-commande logique et interdit son rebouclage. Le backend matériel protège les
-écritures flash par exclusion des IRQ et de l'autre cœur. Les tests natifs
-injectent coupures et corruption, vérifient deux compteurs indépendants et
-la file STOP. Ils ne constituent pas des essais de coupure sur la carte.
-Le codec et ses temporisations sont comparés hors ligne ; aucun scheduler
-PIO d'émission n'est activé sans qualification du profil et de l'association.
-
-Le scheduler [radio_runtime.h](https://github.com/guilhem/x2d-core/blob/ef5b86d7a1b965d316d2df2ff536d79db7c8db7e/src/radio_runtime.h) est raccordé au journal,
-au pilote [radio_tx.h](ha_x2d/radio_tx.h) et aux opérations USB. Ses deux gates
-restent désactivés dans le build distribué. Les actions du cycle B observé
-sont `81` (montée), `82` (descente) et `04` (STOP). Chaque réservation précède
-la construction du corps et toutes les copies utilisent le même compteur.
-STOP intervient après la durée complète du dernier chip d'une trame ; les
-copies utilisent une seule rafale DMA continue, vérifiée numériquement sur
-la carte au repos et sous trafic USB.
-Les résultats indiquent les copies complètes et les erreurs après acceptation.
-L'ACK USB est mis en file avant toute émission ; les événements d'une ancienne
-connexion sont ignorés après reconnexion. L'USB utilise une file de sortie
-bornée et lit au plus une requête par tour pour servir la radio régulièrement.
-Une saturation ferme les admissions et annule les travaux à la frontière sûre.
-
-Le candidat TX configure l'OOK asynchrone à 868,350 MHz, deux niveaux PATABLE
-avec porteuse coupée pour zéro, et vérifie les registres avant de prendre GP20.
-Ces réglages suivent le [datasheet CC1101](https://www.ti.com/lit/ds/symlink/cc1101.pdf),
-sections 24 et 27. Une compilation ou une mesure numérique ne confirme ni la
-modulation reçue par le moteur ni son acceptation d'une nouvelle identité.
-
-### Essai supervisé de C
-
-Le build distribué garde la radio désactivée. Un binaire privé d'essai active
-`HA_X2D_SUPERVISED_TX=1` et impose `HA_X2D_TRIAL_SUFFIX`, l'octet de groupe
-d'identité observé localement. Il ne doit pas être distribué comme un profil
-qualifié. `provision` crée seulement le slot 1 avec un préfixe aléatoire frais
-et persiste son identité ; avant `pair`, comparer en privé l'identité du
-journal lu sur la carte à toutes les identités A/B capturées. En cas de
-collision, arrêter cet essai sans effacer le journal ni reprovisionner ;
-une nouvelle génération demande une procédure séparée. Le seed 0 est une
-hypothèse expérimentale fixe.
-
-L'utilisateur ouvre manuellement la fenêtre d'association avec STOP sur A
-en N jusqu'au va-et-vient, puis relâche. Après sa confirmation, dans la minute,
-une seule opération USB `pair` envoie les deux phases observées du geste B :
-24 copies de `22 02`, puis 24 de `22 20 07`, départs séparés de 2 001 ms.
-Les deux compteurs consécutifs sont réservés durablement avant tout RF.
-Par défaut, `HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER=0` exige le prochain compteur
-égal à zéro ; après consommation de 0/1, ce binaire refuse un nouvel essai,
-même après redémarrage ou mise à jour. Seules les valeurs 0 et 2 sont admises.
-Le binaire privé avec la valeur 2 permet une seule reprise de la même identité
-C déjà persistée, aux compteurs 2/3, puis refuse dès que le prochain compteur
-vaut 4, y compris après redémarrage. Il refuse un slot encore au compteur 0.
-Cette reprise exige une interruption USB établie, le keep-awake Linux effectif,
-une preuve numérique sans RF de 48 copies en attente silencieuse, une relecture
-privée de l'identité et de la génération C originales, puis une nouvelle fenêtre
-manuelle confirmée par l'utilisateur. Elle ne change ni l'identité ni le seed.
-Il n'y a ni émission au boot, ni reprise, reprovisionnement ou réinitialisation
-automatiques du compteur. Le fail-stop USB reste actif ; HA OS et l'acceptation
-moteur restent à qualifier.
-
-Un résultat USB `emitted` confirme uniquement la sortie de la clé. Sans
-va-et-vient distinct après C, arrêter et conserver le slot et ses compteurs ;
-ne pas confirmer l'association, changer de seed ou reprovisionner. Après
-accusé humain, `confirm` persiste le slot ; tester STOP, puis montée/STOP et
-descente/STOP sous surveillance, avec A/B disponibles, et vérifier ensuite
-A/B. Le profil RF, les coupures et la latence matérielle restent à qualifier.
-
-FREND0 sélectionne PATABLE[1] pour le niveau haut OOK ; les deux niveaux sont
-relus. IOCFG0 et PKTCTRL0 sont relus avant chaque prise de GP20. Un défaut
-numérique garde GP20 bas jusqu'à confirmation IDLE ; si IDLE n'est pas
-confirmé, l'émission reste désactivée avec GP20 bas.
-
-### Commander C déjà associée
-
-L’utilisateur a confirmé montée/STOP et descente/STOP par C, puis le maintien
-du fonctionnement de A/B. Un build séparé conserve cette association sans
-permettre une nouvelle inscription :
-
-```sh
+# For previously paired shutters, with RF deliberately enabled:
 devenv tasks run firmware:commands-build
 ```
 
-`dist/ha_x2d-0.3.0-yd-rp2040-4mb-COMMANDS-ONLY-UNQUALIFIED-RADIO.uf2` annonce
-**0.3.0-commands** et les capacités `status`, `shutters`, `command`.
-`HA_X2D_COMMANDS_TX=1` active le profil de commande observé pour les slots
-déjà associés ; `pair`, `confirm` et la création d’un slot restent refusés.
-Il ne contient aucun suffixe personnel. Le journal, son identité C, sa
-génération et ses compteurs doivent être identiques avant et après flashage.
-Une clé vierge reste inerte. La veille USB de l’hôte HA OS doit être vérifiée
-séparément avant usage. Ce build n’étend pas la qualification à d’autres moteurs
-ni à une inscription initiale sans la reprise supervisée.
+Outputs are `dist/ha_x2d-0.4.0-yd-rp2040-4mb-UNQUALIFIED-RADIO.uf2` (RF off) and
+`dist/ha_x2d-0.4.0-yd-rp2040-4mb-COMMANDS-ONLY-UNQUALIFIED-RADIO.uf2`.
+No build task flashes hardware. The commands-only build enables existing paired
+identities and refuses new association/confirmation.
 
-## Câblage matériel utilisé
+The **yd-rp2040-4mb-journal** profile fixes Arduino-Pico **6.1.1** and the physical
+4 MiB board's linker reservation. Its raw **64 KiB** journal starts at
+**0x101FF000** (`_FS_start`), inside the reserved 2 MiB filesystem region. The
+firmware checks this mapping, never mounts LittleFS and never formats corruption.
+Every firmware update must preserve it. Validate the exact UF2 before copying
+it to the board in BOOTSEL mode:
+
+```sh
+python tools/check_uf2_layout.py build/firmware/ha_x2d.ino.uf2
+```
+
+Never use a whole-flash erase tool or a differently partitioned build. A normal
+UF2 update preserves the journal's format, identities and consumed counters.
+The 2 MiB profile is compile-only: storage is incompatible and RF is refused.
+
+The shared controller and runtime reserve counters before RF, keep STOP priority,
+maintain storage only at radio idle, and never replay on connection or restart.
+The PIO/DMA burst remains continuous, with a single preamble and preserved phase.
+STOP ends it at a complete frame boundary. The nominal chip duration stays
+**208500 ns** in `radio_tx.h` (`DEFAULT_CHIP_NS`); retain and calibrate this value
+when qualifying hardware. The CC1101 candidate profile remains async OOK at
+868.350 MHz, with register checks before transmission. No radio changes are
+implied by switching the USB protocol.
+
+On USB loss, pending input/output and requests are discarded. The active burst
+stops at its frame boundary and reservations remain consumed. The loop reads
+one bounded request per pass and never blocks on USB writes. An output overflow
+requires reopening USB. Keep the USB link awake as described below.
+
+### Supervised enrollment
+
+Default builds have `HA_X2D_COMMANDS_TX=0` and `HA_X2D_SUPERVISED_TX=0`.
+An explicitly built private trial with `HA_X2D_SUPERVISED_TX=1` requires
+`HA_X2D_TRIAL_SUFFIX`, the locally observed identity suffix. The current RP2040
+trial is restricted to **slot 1** and is not a generally qualified pairing
+profile. The shared controller supports 16 slots; that does not authorize new
+RF identities on untested motors.
+
+`HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER` permits only **0** (one 0/1 attempt) or **2**
+(one explicitly authorized 2/3 resume). Consumed counters never become reusable
+on reboot. The identity seed remains the supervised hypothesis 0. Each attempt
+requires a fresh ON of MySensors child 17 and emits the existing two-phase
+24-copy sequence. Never distribute a private trial build as a qualified release.
+No motor response means no confirmation. Only human observation authorizes ON
+of child 18, after the radio is idle; the cover then appears without restarting.
+Confirmation can resume after power loss in the same authorized trial build.
+
+Historical C enrollment and motor observations remain in
+[OBSERVATIONS_RADIO.md](../docs/OBSERVATIONS_RADIO.md); this migration does not
+extend that qualification. Initial association, reset/watchdog carrier-off,
+USB unplugging and STOP latency must be measured with this firmware on hardware.
+Use a 10 kΩ GDO0 pull-down to keep the data input low during reset and verify the
+actual carrier-off behavior; firmware reinitializes the CC1101 at startup.
+
+## Wiring
 
 | YD-RP2040 | CC1101 |
 | --- | --- |
@@ -295,7 +250,7 @@ stable issu de la flash. Le sketch RX debug utilise `HA-X2D RX Debug` et ne
 correspond pas à la découverte HA. Aucun flashage n'est inclus dans les tâches
 de compilation. Vérifier le matériel séparément avant toute qualification.
 
-## Veille USB sous Linux
+## USB power
 
 La veille automatique USB doit être désactivée pour cette passerelle pendant
 les transactions radio. Sur l'hôte Ubuntu de test, `power/control=auto`, délai
@@ -321,19 +276,11 @@ l'accès USB BOOTSEL peut être donné à `plugdev` par une règle VID/PID sépa
 Sur HA OS, vérifier cette condition lors de la qualification du lien USB ;
 les commandes d'installation Ubuntu ci-dessus ne sont pas une procédure HA OS.
 
-## Cœur partagé
+## Shared core
 
-Les profils Arduino CLI chargent `../../lib/x2d-core` via `dir:`. Initialiser
-ce sous-module avant les tests ou les builds :
-
-```sh
-git submodule update --init --recursive
-```
-
-Le [cœur portable](https://github.com/guilhem/x2d-core/blob/ef5b86d7a1b965d316d2df2ff536d79db7c8db7e/README.md) possède le codec, le journal,
-l'ordonnanceur STOP, le serveur JSONL v2 et les séquences CC1101. Le sketch
-conserve les adaptateurs USB/SPI/GPIO/flash et PIO/DMA, l'identité, le hasard,
-la calibration et la politique d'autorisation des profils. La région du journal
-reste `0x101FF000`, sans montage ni formatage. Les tests natifs sont exécutés
-par CMake depuis le sous-module, puis complétés ici par les contrôles PIO,
-RX/TX, les tests du client réel sur PTY/TCP et les contrôles des régions UF2.
+Arduino CLI profiles load the pinned `../../lib/x2d-core` submodule via `dir:`.
+The core owns the codec, journal, STOP runtime, association controller, CC1101
+register operations and bounded MySensors adapter. This repository retains
+USB/SPI/GPIO/flash and PIO/DMA adapters, identity and entropy, timing calibration,
+and explicit build-time permissions. The ESPHome adapter uses the same controller
+but retains ownership of native API visibility, reboot-after-confirmation and OTA.

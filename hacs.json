@@ -1,8 +1,0 @@
-{
-  "name": "X2D Gateway",
-  "zip_release": true,
-  "filename": "x2d.zip",
-  "hide_default_branch": true,
-  "render_readme": true,
-  "homeassistant": "2026.9.4"
-}

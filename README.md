@@ -1,88 +1,89 @@
-<p align="center">
-  <img src="assets/readme/hero.svg" width="100%" alt="ha-x2d — an experimental USB radio gateway: Home Assistant, an independent Python client, and RP2040 firmware with a CC1101 radio.">
-</p>
+# X2D shutters over USB
 
-An experimental **USB gateway for radio-controlled shutters in Home Assistant**,
-built around a **YD-RP2040 and an SPI CC1101**. The aim is local control without
-a separate MQTT broker, with a Python client other applications can reuse.
+Control X2D shutters with **Home Assistant's built-in MySensors integration**,
+a YD-RP2040 and a CC1101. The dongle owns the radio identities, associations
+and rolling counters. No HACS component, companion service or MQTT broker.
 
-> **Experimental.** USB, SPI and passive STOP reception have been checked on
-> hardware. C now opens/stops and closes/stops the current motor from Home
-> Assistant OS, with the original remotes preserved. General enrollment and
-> other motors remain unqualified; the default gateway build keeps RF disabled.
+```text
+Home Assistant / MySensors → USB → RP2040 / x2d-core → CC1101 → shutter
+```
 
-## What works today
+**Experimental radio support.** Default builds cannot transmit. The historical
+JSONL firmware controlled one France Fermetures / Well’com motor, including
+open, close and STOP, with its original remotes still working. This evidence
+does **not** qualify the MySensors firmware, fresh enrollment or other motors.
+See [hardware qualification](home_assistant/README.md#hardware-qualification).
 
-- USB identification, connection diagnostics and CC1101 register probing.
-- Reproducible offline decoding of passive captures, plus public test vectors.
-- USB v2 client and native HA subentries: one cover per shutter, unknown position.
-- Simulated two-shutter checks, durable counter journal and STOP queue checks.
-- A commands-only build for identities already paired in the dongle journal.
-- One real HA OS shutter entity, dashboard controls and an automation STOP check.
-- Release-based HACS packaging with the Python client and local brand images.
+## Connect to Home Assistant
 
-The first target is the France Fermetures / Well’com shutter under study.
-Its observed C cycle works with asynchronous OOK. Enrollment for other motors
-and their identity format still need physical evidence.
+1. Build and flash the journal-protecting UF2 described in the
+   [firmware guide](firmware/README.md). Existing paired slots are retained.
+2. Add **MySensors** in Settings → Devices & services. Choose **Serial**, the
+   dongle's `/dev/serial/by-id/…` path, **115200 baud** and version **2.3**
+   (the default 1.4 is unsuitable).
+3. Add the following to `configuration.yaml`, merging any existing
+   `homeassistant` section, then reload customizations or restart HA:
 
-## Gateway components
+   ```yaml
+   homeassistant:
+     customize_glob:
+       "cover.x2d_*":
+         assumed_state: true
+         device_class: shutter
+   ```
 
-| Component | Responsibility |
-| --- | --- |
-| [Home Assistant integration](home_assistant/README.md) | Gateway setup, shutter subentries and diagnostics. |
-| [Python client](python/README.md) | Async serial communication over USB or serial URLs, usable independently of HA. |
-| [Portable X2D core](https://github.com/guilhem/x2d-core) | Radio codec, durable counter journal, scheduler and JSONL gateway. |
-| [RP2040 firmware](firmware/README.md) | USB, flash, SPI/GPIO and PIO/DMA adapters. |
+Associated shutters appear automatically, up to 16. Their initial entity IDs
+start with `cover.x2d_`; keep that prefix when editing an entity ID. Display
+names can be changed freely. Each cover exposes open, close and STOP, without
+a position slider. MySensors also presents momentary pairing/confirmation
+switches and a read-only diagnostic sensor.
 
-## Try it locally
+A completed transmission updates an **assumed** open/closed state. It does not
+prove reception or measure travel. STOP, reboot, USB loss and uncertain radio
+output invalidate that estimate. Native MySensors displays “open” for unknown
+position by convention; `pos_unknown` in the diagnostic explains this.
+Native HA can retain displayed states after unplugging the dongle: an entity
+that looks available is **not** proof that commands can reach its motor.
 
-On **Linux with glibc**, install [devenv](https://devenv.sh/getting-started/)
-and its Nix prerequisite, then run from the repository root:
+See the [installation, association and migration guide](home_assistant/README.md)
+before replacing the old HACS integration. A normal migration requires **no
+motor reassociation**, but HA entity references and automations must be updated.
+
+## Build and check
+
+On Linux, with [devenv](https://devenv.sh/getting-started/) and Nix installed:
 
 ```sh
 git submodule update --init --recursive
 devenv shell
 devenv test
-```
-
-No dongle is needed for the tests. Build the two artifacts with:
-
-```sh
 devenv tasks run firmware:build
-devenv tasks run ha:package
 ```
 
-Both artifacts are written to `dist/`. See the [wiring and firmware guide](firmware/README.md)
-and [Home Assistant installation guide](home_assistant/README.md) for next steps.
+The default UF2 has RF disabled. `firmware:commands-build` explicitly enables
+commands for slots already paired in the journal, without enabling enrollment.
+Build tasks never flash a board. Both builds check the protected journal range.
 
-## Home Assistant installation
+Software validation targets **HA 2026.9.4**, **pymysensors 0.26.0**, MySensors
+**2.3**, Arduino-Pico **6.1.1**, and the pinned
+[`x2d-core`](https://github.com/guilhem/x2d-core) submodule. Native C++ tests cover
+radio scheduling, durable reservations, recovery, STOP priority, the shared
+controller and serial parsing. Python tests drive the real MySensors/HA stack
+over a PTY connected to that same C++ adapter, with simulated flash and radio.
+CI also builds RP2040 and the [ESPHome adapter](https://github.com/guilhem/esphome-x2d).
+Software checks are separate from HA OS / dongle / motor qualification.
 
-The manual archive and commands-only firmware work on HA OS 18.3 / Core
-2026.9.4 with the C slot already paired in the dongle. USB power management,
-open/stop, close/stop and an automation STOP call have been checked on that
-installation. The user also confirms control from the dashboard and the
-motor's automatic stop at its upper limit; HA still has no position feedback.
+## Source layout
 
-For HACS, build `dist/x2d.zip` with `python tools/build_component.py --hacs`.
-HACS requires a public GitHub repository. Add this repository as an **Integration**, then install a published
-release. HACS manages the integration files; keep the existing X2D entry and
-shutters when moving from a manual installation. See the
-[installation and update guide](home_assistant/README.md).
+| Location | Responsibility |
+| --- | --- |
+| `firmware/ha_x2d/` | USB identity, flash mapping, SPI and PIO/DMA output |
+| `lib/x2d-core/` | Shared association controller, codec, journal, STOP runtime and MySensors adapter |
+| `tests/test_mysensors.py` | Native HA and pymysensors over simulated USB |
+| `firmware/rx_debug/`, `tools/` | Passive capture and offline radio analysis |
 
-Home Assistant represents the dongle as an **X2D Gateway** and each shutter
-as a separate connected device. With the commands-only firmware, adding a
-shutter recovers an existing paired identity from the dongle. A single available
-identity is selected automatically; multiple identities are listed explicitly.
-Creating a new radio identity remains unavailable in this firmware.
+[Serial contract](docs/USB_PROTOCOL.md) · [Radio observations](docs/OBSERVATIONS_RADIO.md)
 
-Publication and an actual HACS installation/update remain to be verified.
-General enrollment, other
-motors, physical STOP latency, old HA backup recovery and power-cut tests
-remain separate qualification steps.
-
-[Architecture and trade-offs](docs/EXPLORATION.md) ·
-[Radio observations](docs/OBSERVATIONS_RADIO.md) ·
-[Gateway protocol](docs/USB_PROTOCOL.md)
-
-Research notes are in French. The [public-sample checks](research/verify_public_samples.py)
-include code adapted from mr-sven under [Apache-2.0](research/LICENSE-APACHE).
+Older research notes are historical and may describe the removed JSONL/HACS
+architecture. The radio transform derives from mr-sven's work under
+[Apache-2.0](research/LICENSE-APACHE); see the core's LICENSE and NOTICE.

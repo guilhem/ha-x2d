@@ -5,7 +5,9 @@ requires-python = ">=3.14.2,<3.15"
 
 [dependency-groups]
 dev = [
-    "x2d-gateway",
+    "pymysensors==0.26.0",
+    "paho-mqtt==2.1.0",  # HA imports its MQTT module even for serial MySensors.
+    "serialx==1.10.0",  # Passive RX capture tool.
     "homeassistant==2026.9.4",
     "aiousbwatcher==1.1.2",
     "aiohasupervisor==0.6.0",
@@ -14,9 +16,3 @@ dev = [
 
 [tool.uv]
 package = false
-
-[tool.uv.workspace]
-members = ["python"]
-
-[tool.uv.sources]
-x2d-gateway = { workspace = true }
