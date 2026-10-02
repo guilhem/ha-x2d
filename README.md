@@ -19,7 +19,7 @@ a separate MQTT broker, with a Python client other applications can reuse.
 - Simulated two-shutter checks, durable counter journal and STOP queue checks.
 - A commands-only build for identities already paired in the dongle journal.
 - One real HA OS shutter entity, dashboard controls and an automation STOP check.
-- A release archive prepared for HACS custom-repository installation.
+- Release-based HACS packaging with the Python client and local brand images.
 
 The first target is the France Fermetures / Well’com shutter under study.
 Its observed C cycle works with asynchronous OOK. Enrollment for other motors
@@ -62,8 +62,19 @@ installation. The user also confirms control from the dashboard and the
 motor's automatic stop at its upper limit; HA still has no position feedback.
 
 For HACS, build `dist/x2d.zip` with `python tools/build_component.py --hacs`.
-Publication and a real HACS installation/update remain to be done; follow the
-[installation guide](home_assistant/README.md). General enrollment, other
+HACS requires a public GitHub repository. Add this repository as an **Integration**, then install a published
+release. HACS manages the integration files; keep the existing X2D entry and
+shutters when moving from a manual installation. See the
+[installation and update guide](home_assistant/README.md).
+
+Home Assistant represents the dongle as an **X2D USB Gateway** and each shutter
+as a separate connected device. With the commands-only firmware, adding a
+shutter recovers an existing paired identity from the dongle. A single available
+identity is selected automatically; multiple identities are listed explicitly.
+Creating a new radio identity remains unavailable in this firmware.
+
+Publication and an actual HACS installation/update remain to be verified.
+General enrollment, other
 motors, physical STOP latency, old HA backup recovery and power-cut tests
 remain separate qualification steps.
 

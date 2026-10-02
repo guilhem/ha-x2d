@@ -54,11 +54,19 @@
       "title": "Volet",
       "step": {
         "user": {
-          "title": "Ajouter un volet",
-          "description": "Choisissez un emplacement stable. Reprendre une association interrompue avec le même emplacement conserve son identité. Ces consignes concernent uniquement le moteur Franciasoft / Well'com observé avec sa télécommande de BASE d’origine. Ne réinitialisez pas le moteur.",
+          "title": "Associer un nouveau volet",
+          "description": "Choisissez un emplacement stable pour une nouvelle association. Reprendre une association interrompue avec le même emplacement conserve son identité. Ces consignes concernent uniquement le moteur Franciasoft / Well'com observé avec sa télécommande de BASE d’origine. Ne réinitialisez pas le moteur.",
           "data": {
             "name": "Nom du volet",
             "shutter_id": "Emplacement (1–16)"
+          }
+        },
+        "recorded": {
+          "title": "Ajouter un volet enregistré",
+          "description": "La passerelle détient déjà ces volets associés, absents de Home Assistant :\n{recorded}\n\nNommez le volet pour l’ajouter, puis testez-le. Cela n’ajoute qu’un volet que la passerelle possède déjà : rien n’est associé, créé ni confirmé.",
+          "data": {
+            "name": "Nom du volet",
+            "shutter_id": "Volet enregistré"
           }
         },
         "enroll": {
@@ -108,8 +116,10 @@
         "shutter_unavailable": "Le volet ou la connexion n’est pas prêt pour une commande. Aucune tentative de reconnexion ni aucun rejeu de commande n’est effectué ici."
       },
       "abort": {
+        "cannot_connect": "Passerelle indisponible. Vérifiez la connexion USB et ajoutez de nouveau le volet ; aucune commande RF n’est émise.",
+        "invalid_gateway": "Le protocole ou l’identité de la passerelle est incompatible.",
         "no_slots": "Tous les emplacements de cette passerelle sont déjà configurés.",
-        "enrollment_unavailable": "Le firmware installé ne permet pas encore d’ajouter un nouveau volet. Les volets déjà configurés restent utilisables.",
+        "enrollment_unavailable": "Tous les volets enregistrés sur la passerelle sont déjà dans Home Assistant, et le firmware installé ne permet pas encore d’associer un nouveau volet.",
         "already_configured": "Cet emplacement est déjà configuré.",
         "generation_changed": "Le stockage de la passerelle a changé. L’ancienne référence du volet ne peut pas être réutilisée.",
         "storage_corrupt": "Le stockage est corrompu. Aucune réinitialisation ni aucun formatage automatique.",

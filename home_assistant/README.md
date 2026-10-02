@@ -1,147 +1,119 @@
-# Adaptateur Home Assistant
+# X2D dans Home Assistant
 
-Composant personnalisé `x2d` 0.3.0 pour Home Assistant Core **2026.9.4**.
-Une entrée USB possède un coordinateur partagé et les diagnostics USB/CC1101.
-Chaque volet est une sous-entrée native liée à son slot et à la génération du
-journal, avec une entité `cover` OPEN, STOP et CLOSE.
+Intégration personnalisée **0.3.1** pour Home Assistant Core **2026.9.4** et
+versions compatibles. La clé USB apparaît comme une **passerelle USB X2D**.
+Chaque volet est un appareil connecté distinct, avec les commandes montée,
+STOP et descente. La fiche de la passerelle présente les volets dans la liste
+native **Connected devices** ; la page des intégrations les regroupe par
+sous-entrée. Les références RP2040/CC1101 figurent dans les diagnostics.
 
-```sh
-python3 tools/build_component.py
-```
+**Le firmware 0.3.0-commands commande les identités déjà associées dans la clé.
+L'association d'une nouvelle télécommande est reportée.** Un moteur a été
+vérifié physiquement ; plusieurs volets sont couverts uniquement en simulation.
+La position, le mouvement et l'état fermé restent inconnus sans retour moteur.
 
-Décompresser `dist/x2d-0.3.0.zip` dans le répertoire de configuration HA, puis
-redémarrer. Ajouter **X2D USB Gateway** dans **Paramètres → Appareils et services**
-ou accepter sa découverte USB. HA OS utilise directement le port USB accessible
-à Core ; préférer `/dev/serial/by-id/…`. VM et conteneurs nécessitent une
-transmission USB adaptée. Le flux vérifie le produit et l’identité physique.
-**Reconfigurer** change le port de la même passerelle.
+## Installer avec HACS
 
-La bibliothèque Python n’étant pas publiée sur PyPI, le script la copie dans
-`_client/` à la fabrication de l’archive. Sa source unique reste
-`python/src/x2d_gateway/` ; copier le composant source seul ne suffit pas.
+HACS exige un dépôt GitHub public. Une release publiée contenant l'asset
+**x2d.zip** est nécessaire. Un tag
+ou le téléchargement de la branche source ne suffit pas : le client Python est
+intégré au ZIP lors de sa construction. La branche source est masquée dans HACS.
 
-## Installation HACS après publication
+1. Dans HACS, ouvrir **⋮ → Dépôts personnalisés**.
+2. Ajouter `https://github.com/guilhem/ha-x2d`, catégorie **Intégration**.
+3. Télécharger **X2D USB Gateway**, version **0.3.1**, puis redémarrer HA.
+4. Dans **Paramètres → Appareils et services**, accepter la découverte USB ou
+   ajouter **X2D USB Gateway**. Pour une installation manuelle existante,
+   conserver son entrée X2D et ses volets ; ne pas les supprimer ou les recréer.
 
-L’adaptateur est dans `custom_components/x2d/` à la racine du dépôt, avec son
-`manifest.json`, comme l’exige la [structure officielle HACS](https://www.hacs.dev/docs/publish/integration/).
-Le guide reste dans `home_assistant/README.md` et la source du client dans
-`python/src/x2d_gateway/`. Le [code de validation HACS](https://github.com/hacs/integration/blob/main/custom_components/hacs/repositories/integration.py)
-cherche ce manifeste dans l’arborescence Git avant le téléchargement du ZIP.
-**La publication GitHub et l’installation via HACS restent à faire.**
+L'icône est livrée dans le composant via le mécanisme de
+[marque locale de Home Assistant](https://developers.home-assistant.io/docs/core/integration/brand_images/).
+Ce dépôt est installé comme
+[dépôt personnalisé HACS](https://www.hacs.dev/docs/faq/custom_repositories/).
+Son inscription au catalogue par défaut est une démarche distincte.
 
-Le `hacs.json` racine prépare une distribution par release avec un asset de nom
-fixe **`x2d.zip`**, HA minimum **2026.9.4** et la branche par défaut masquée.
-Le client reste généré dans l’archive ; il n’est pas nécessaire de versionner
-`_client/` pour ce téléchargement par release. La branche source seule reste
-incomplète. Voir les [métadonnées HACS](https://www.hacs.dev/docs/publish/start/)
-et le [téléchargement des archives](https://github.com/hacs/integration/blob/main/custom_components/hacs/repositories/base.py).
+HA OS doit exposer la clé à Core. Préférer un port `/dev/serial/by-id/…` ;
+pour une VM ou un conteneur, transmettre explicitement l'USB. **Reconfigurer**
+permet de changer le port de la même passerelle. Son identité est vérifiée.
+La clé doit rester éveillée pendant les échanges : `power/control=on` a été
+vérifié sur HA OS 18.3. Sur un autre hôte Linux, utiliser la
+[règle de veille USB ciblée](../firmware/99-ha-x2d-power.rules) et vérifier ce
+réglage ; prolonger les délais ne corrige pas une suspension USB.
 
-Depuis la racine du dépôt, avec l’environnement existant épinglé par `uv.lock` :
+## Récupérer un volet déjà associé
 
-```sh
-.devenv/state/venv/bin/python tools/build_component.py --hacs
-.devenv/state/venv/bin/python -m unittest discover -s tests -p test_home_assistant.py -v
-```
+Dans l'entrée de la passerelle, ajouter une sous-entrée **Volet** et choisir
+son nom. Si une seule identité associée est disponible, elle est sélectionnée
+automatiquement. Sinon, choisir un volet dans la liste des identités enregistrées.
+Le parcours propose ensuite une commande de test explicite et demande de
+confirmer le résultat observé avant de créer l'entité.
 
-`dist/x2d.zip` contient directement `manifest.json`, les plateformes,
-les traductions et `_client/`. HACS l’extrait dans `custom_components/x2d/`.
-**Ne pas joindre `dist/x2d-0.3.0.zip` comme asset HACS** : cette archive manuelle
-conserve le préfixe `custom_components/x2d/`. Les deux formats ont le même contenu
-et des métadonnées ZIP fixes ; chaque format est reproductible octet pour octet
-avec les mêmes sources et le même environnement Python/zlib.
+Cette récupération n'envoie ni `provision`, ni `pair`, ni `confirm`. Elle
+conserve l'identité, la génération et les compteurs de la clé. Si tous ses
+volets associés sont déjà présents dans HA, le bouton d'ajout explique que le
+firmware ne permet pas de créer une nouvelle association. Cela ne signifie pas
+que les 16 emplacements de la clé sont occupés.
 
-Publication restant à faire par le mainteneur :
-
-1. Publier les sources avec `custom_components/x2d/`, le `hacs.json` racine,
-   le README et le manifeste enrichi.
-2. Vérifier les versions du manifeste et du client, construire depuis les
-   sources de la version retenue et lancer les checks ci-dessus.
-3. Publier une **release GitHub non draft**, avec un tag correspondant à la
-   version du manifeste (actuellement `0.3.0`) et l’asset exact **`x2d.zip`**.
-   Un tag seul ne suffit pas ; chaque release proposée doit posséder cet asset.
-
-Ensuite, dans HACS : menu **⋮ → Dépôts personnalisés**, ajouter
-`https://github.com/guilhem/ha-x2d`, type
-**Intégration**, puis télécharger **X2D USB Gateway** et redémarrer HA.
-Ajouter ensuite l’intégration dans **Paramètres → Appareils et services**, ou
-conserver l’entrée `x2d` déjà configurée. La procédure de dépôt personnalisé est
-[documentée par HACS](https://www.hacs.dev/docs/faq/custom_repositories/).
-L’ajout à son catalogue par défaut est une démarche distincte.
-L’enregistrement du dépôt, le téléchargement et la mise à jour via HACS
-restent à valider après publication ; aucun de ces gestes n’a été effectué ici.
-
-## Configuration des volets
-
-Ajouter un volet via la sous-entrée **Volet** : choisir son nom et un emplacement
-(1–16). Les consignes français/anglais livrées concernent uniquement le moteur
-**Franciasoft / Well’com observé**, avec sa télécommande d’origine reconnue comme
-émetteur de **BASE** (un accusé mécanique, confirmé par l’utilisateur).
-Elles suivent le Well’book [p. 87 — ajout d’un émetteur](https://pro.franciaflex.com/medias/FX-ex/book/wellbook/87-Ajouter-un-emetteur-complementaire.html)
-et [p. 89 — identification BASE/complémentaire](https://pro.franciaflex.com/medias/FX-ex/book/wellbook/89-Reconnaitre-un-emetteur-de-base-complementaire.html),
-sources S03/S04 du [dossier technique](../docs/DOSSIER_TECHNIQUE.md).
-
-1. Placer la télécommande de BASE existante en mode normal **N**.
-2. Maintenir **STOP** jusqu’à l’accusé mécanique du moteur, puis relâcher.
-3. Dans la minute suivant cet accusé, valider le formulaire HA. La passerelle
-   inscrit uniquement sa nouvelle identité **C**. Si la minute est écoulée,
-   reprendre les étapes 1 et 2 avant de valider.
-4. Confirmer dans HA l’accusé mécanique suivant du moteur, après l’inscription de C.
-
-L’ouverture du mode association est manuelle ; HA n’a pas besoin de recevoir
-le trafic de la télécommande existante. Garder le volet sous surveillance et
-conserver les télécommandes existantes, sans réinitialiser le moteur.
-L’association est alors persistée dans la passerelle.
-Choisir ensuite une commande de test explicite (OPEN, STOP ou CLOSE),
-puis confirmer le résultat observé pour créer la sous-entrée HA. On peut choisir
-un autre test sans émission implicite. Un slot déjà paired reprend directement
-ce test, sans rejouer l’association. Provisionner n’émet aucune RF. Une interruption
-conserve le slot pending ; reprendre avec le même emplacement. L’émission seule
-ne crée jamais une association confirmée.
-
-Avec le firmware **0.3.0-commands**, seuls les slots déjà associés dans la clé
-sont proposés. Choisir le slot de C et son nom conduit directement au test,
-sans `provision`, `pair` ou `confirm`. La clé conserve son identité, sa génération
-et ses compteurs. Ce firmware ne permet pas encore d’inscrire un autre volet.
-Lorsque ses volets associés sont déjà ajoutés à HA, le bouton d’ajout explique
-que l’association d’un nouveau volet n’est pas disponible avec le firmware
-installé ; il ne signale pas à tort que les 16 emplacements sont occupés.
-
-Ces consignes physiques ne valident pas le profil radio du firmware.
-Si le firmware annonce seulement `status` et `shutters`, le flux refuse de
-provisionner et ne modifie aucun
-stockage. Sans capacité `pair` ou avec `tx_enabled=false`, le flux refuse aussi
-l’association avec `profile_unverified` et garde le volet pending.
-
-Position et état fermé restent inconnus ; `last_command_intent` représente
-seulement la dernière intention enregistrée par la passerelle. Disponibilité :
-liaison active, génération correspondante, stockage ready, slot paired, radio
-détectée et TX autorisé. Une génération différente invalide les anciennes
-références. Supprimer une entité ou sous-entrée n’émet rien, ne libère pas son
-contrôleur en flash et ne réinitialise aucun compteur.
-
-Après débranchement, les entités deviennent indisponibles ; le coordinateur
-réouvre la même identité lors du prochain rafraîchissement (30 secondes).
-Une commande utilise directement la connexion et son état déjà validés ; un
-polling en attente ne retarde pas l’envoi de STOP. Une connexion indisponible ou
-en cours de revalidation refuse la commande, sans reconnexion sur ce chemin.
-Le rafraîchissement forcé après l’émission lit le journal avant le retour du
-service, même pour deux commandes rapides. Il ne rejoue aucune commande. Les diagnostics exportés masquent identités,
-sessions, génération et compteurs radio.
-
-Validation locale : composant empaqueté chargé dans HA Core réel, transport PTY,
-deux sous-entrées, flux guidé avec test observé, reprise paired, services cover,
-STOP concurrent pendant TX ou status en attente, reconnexion et
-invalidation de génération. Sur l’instance HA OS 18.3 / Core 2026.9.4,
-l’archive manuelle et le firmware **0.3.0-commands** ont ensuite été installés.
-Le slot de C a été adopté sans nouvelle association : montée/STOP depuis le
-parcours d’ajout, puis descente/STOP depuis l’entité `cover.volet_c`, confirmés
-physiquement par l’utilisateur. Les trois commandes du tableau de bord sont
-visibles et l’utilisateur confirme son pilotage, notamment une montée jusqu’à
-l’arrêt moteur en fin de course. Une automatisation temporaire STOP a terminé sans erreur, puis a
-été supprimée. Ces preuves ne valident pas encore l’installation/mise à jour
-via HACS. Après un redémarrage HA avec la sous-entrée créée, les diagnostics
-confirment l’intégration chargée, C associée, la connexion USB et la dernière
-intention montée conservée ; la position reste inconnue.
-L’utilisateur confirme qu’aucun mouvement ne survient pendant ce redémarrage.
-A/B avaient été vérifiées après les essais radio précédents ; voir les
+L'ouverture du mode association par une télécommande physique concerne un
+futur firmware d'association qualifié. Elle n'est pas nécessaire pour récupérer
+C. Les essais supervisés et leurs limites sont documentés dans les
 [observations radio](../docs/OBSERVATIONS_RADIO.md).
+
+## Mettre à jour ou revenir à une version précédente
+
+Avant une mise à jour, conserver une sauvegarde de la configuration HA et la
+version actuellement installée. Installer la release souhaitée depuis HACS,
+puis redémarrer HA. Une première migration depuis l'archive manuelle suit la
+même procédure : HACS reprend la gestion des fichiers du composant.
+
+L'entrée X2D, ses sous-entrées, les noms personnalisés et les identifiants des
+entités sont conservés, notamment `cover.volet_c`. Le tableau de bord et les
+automatisations continuent donc de viser la même entité. Le firmware n'est pas
+mis à jour par HACS et les compteurs restent exclusivement dans la clé.
+
+Pour revenir en arrière, sélectionner la release précédente dans HACS,
+la télécharger et redémarrer. L'archive manuelle de cette version constitue
+également un recours si HACS est indisponible. Ne pas supprimer l'intégration
+ni réinitialiser la clé. Restaurer une ancienne configuration HA ne remet pas
+les compteurs radio à zéro ; une génération de journal différente rend les
+anciennes références indisponibles au lieu de les réutiliser.
+
+## Construire les archives
+
+Depuis la racine du dépôt, dans l'environnement `devenv` :
+
+```sh
+devenv test
+devenv tasks run ha:package
+python tools/build_component.py --hacs
+```
+
+`dist/x2d.zip` contient directement les fichiers du composant, ses traductions,
+sa marque locale et `_client/`. C'est l'asset à joindre à la release HACS.
+`dist/x2d-0.3.1.zip` conserve le préfixe `custom_components/x2d/` pour une
+installation manuelle dans le répertoire de configuration HA. Les deux formats
+ont le même contenu, avec des métadonnées ZIP fixes et reproductibles.
+
+La bibliothèque Python garde une source unique dans `python/src/x2d_gateway/` ;
+le générateur la copie dans `_client/`. Les versions du firmware, du client et
+de l'intégration sont indépendantes ; le contrat partagé reste USB v2.
+
+## État et reprise
+
+`last_command_intent` indique la dernière intention enregistrée par la clé,
+pas la position ni la confirmation d'un mouvement. Une émission RF terminée
+ne prouve pas que le moteur a reçu la commande. Les diagnostics exportés
+masquent les identités, sessions, générations et compteurs privés.
+
+La disponibilité exige une connexion validée, le bon journal, un volet associé,
+une radio détectée et l'émission autorisée. Après débranchement, le coordinateur
+réessaie la connexion au prochain rafraîchissement, sans rejouer de commande.
+STOP n'attend pas un rafraîchissement USB déjà en cours. Supprimer une entité
+ou sous-entrée HA n'efface ni l'identité radio ni son compteur dans la clé.
+
+Les essais historiques ont confirmé montée/STOP et descente/STOP de C depuis
+HA OS 18.3 / Core 2026.9.4, le tableau de bord, une automatisation STOP et un
+redémarrage sans mouvement. Les télécommandes A/B ont continué à fonctionner.
+L'installation et la mise à jour réelles par HACS restent à vérifier après
+publication ; ces preuves sont distinctes des tests logiciels et de la
+qualification future de plusieurs moteurs.

@@ -6,6 +6,7 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DEVICE, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from ._client import Gateway, GatewayError
@@ -13,6 +14,10 @@ from ._client import Gateway, GatewayError
 DOMAIN = "x2d"
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR, Platform.COVER]
 LOGGER = logging.getLogger(__name__)
+
+
+def default_title(device_id: str) -> str:
+    return f"X2D USB Gateway {device_id[-6:]}"
 
 
 class GatewayCoordinator(DataUpdateCoordinator[dict]):
@@ -23,6 +28,7 @@ class GatewayCoordinator(DataUpdateCoordinator[dict]):
         self.gateway: Gateway | None = None
         self._validated_gateway: Gateway | None = None
         self.info: dict = {}
+        self.device_id = ""  # gateway device registry id; set before platforms load
 
     async def _async_update_data(self) -> dict:
         try:
@@ -81,10 +87,20 @@ class GatewayCoordinator(DataUpdateCoordinator[dict]):
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    # 0.3.0 titled entries "X2D USB {suffix}"; rename only that exact default.
+    if entry.unique_id and entry.title == f"X2D USB {entry.unique_id[-6:]}":
+        hass.config_entries.async_update_entry(entry, title=default_title(entry.unique_id))
     coordinator = GatewayCoordinator(hass, entry)
     entry.runtime_data = coordinator
     try:
         await coordinator.async_config_entry_first_refresh()
+        # One owner for the gateway device; platforms only reference its identifier.
+        coordinator.device_id = device_registry.async_get(hass).async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, coordinator.info["device_id"])},
+            name=entry.title, manufacturer="ha-x2d", model="X2D USB Gateway",
+            sw_version=coordinator.info["firmware"],
+        ).id
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
         await coordinator.async_shutdown()

@@ -10,7 +10,7 @@ from homeassistant.const import CONF_DEVICE
 from homeassistant.helpers.selector import SerialPortSelector, SelectSelector, SelectSelectorConfig
 from homeassistant.helpers.service_info.usb import UsbServiceInfo
 
-from . import DOMAIN
+from . import DOMAIN, default_title
 from ._client import Gateway, GatewayError, ProtocolError
 
 
@@ -45,7 +45,7 @@ class X2DConfigFlow(ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(info["device_id"])
                 self._abort_if_unique_id_configured(updates={CONF_DEVICE: device})
                 return self.async_create_entry(
-                    title=f"X2D USB {info['device_id'][-6:]}", data={CONF_DEVICE: device}
+                    title=default_title(info["device_id"]), data={CONF_DEVICE: device}
                 )
         return self.async_show_form(
             step_id="user", errors=errors,
@@ -62,7 +62,7 @@ class X2DConfigFlow(ConfigFlow, domain=DOMAIN):
         self._usb_identity = serial
         await self.async_set_unique_id(serial)
         self._abort_if_unique_id_configured(updates={CONF_DEVICE: self._usb_device})
-        self.context["title_placeholders"] = {"name": f"X2D USB {serial[-6:]}"}
+        self.context["title_placeholders"] = {"name": default_title(serial)}
         return await self.async_step_usb_confirm()
 
     async def async_step_usb_confirm(self, user_input: dict | None = None) -> ConfigFlowResult:
@@ -77,7 +77,7 @@ class X2DConfigFlow(ConfigFlow, domain=DOMAIN):
             else:
                 self._abort_if_unique_id_configured(updates={CONF_DEVICE: device})
                 return self.async_create_entry(
-                    title=f"X2D USB {info['device_id'][-6:]}", data={CONF_DEVICE: device}
+                    title=default_title(info["device_id"]), data={CONF_DEVICE: device}
                 )
         return self.async_show_form(
             step_id="usb_confirm", data_schema=vol.Schema({}), errors=errors
@@ -128,6 +128,17 @@ ENROLLMENT_INSTRUCTIONS: dict[str, str] = {
 }
 
 
+# A commands-only gateway can only show a recorded shutter by slot and last command.
+RECORDED_LABEL: dict[str, str] = {
+    "en": "Recorded shutter {slot} (last command: {command})",
+    "fr": "Volet enregistré {slot} (dernière commande : {command})",
+}
+LAST_COMMAND: dict[str, dict[str | None, str]] = {
+    "en": {"open": "open", "close": "close", "stop": "stop", None: "none"},
+    "fr": {"open": "montée", "close": "descente", "stop": "arrêt", None: "aucune"},
+}
+
+
 def _flow_error(exc: Exception) -> str:
     if isinstance(exc, GatewayError):
         if exc.code in {"profile_unverified", "storage_corrupt", "storage_full", "counter_exhausted", "not_paired", "command_uncertain", "instructions_unavailable", "shutter_unavailable"}:
@@ -147,6 +158,8 @@ class ShutterFlow(ConfigSubentryFlow):
         self._name = ""
         self._emitted = False
         self._test_emitted = False
+        self._form: tuple[str, vol.Schema, dict | None] | None = None
+        self._offer: tuple[str, int] | None = None  # generation, default recorded slot
 
     async def _coordinator(self):
         entry = self._get_entry()
@@ -164,6 +177,11 @@ class ShutterFlow(ConfigSubentryFlow):
         language = self.hass.config.language
         return ENROLLMENT_INSTRUCTIONS.get(language, ENROLLMENT_INSTRUCTIONS.get("en", ""))
 
+    def _label(self, shutter):
+        language = self.hass.config.language if self.hass.config.language in RECORDED_LABEL else "en"
+        return RECORDED_LABEL[language].format(
+            slot=shutter["shutter_id"], command=LAST_COMMAND[language][shutter["last_command"]])
+
     async def async_step_user(self, user_input=None):
         errors = {}
         try:
@@ -176,15 +194,39 @@ class ShutterFlow(ConfigSubentryFlow):
                 return self.async_abort(reason="profile_unverified")
             if data["storage"]["state"] in ("corrupt", "full"):
                 return self.async_abort(reason=f"storage_{data['storage']['state']}")
+            if not can_provision and user_input is not None:
+                if self._offer is None or self._offer[0] != data["generation"]:
+                    return self.async_abort(reason="generation_changed")
             used = self._used(data["generation"])
             available = [slot for slot in range(1, coordinator.info["max_shutters"] + 1)
                          if slot not in used and (can_provision or slot in paired)]
             if not available:
+                # "no_slots" means every slot is really in use; otherwise the firmware
+                # simply cannot pair another shutter.
                 return self.async_abort(
-                    reason="no_slots" if can_provision else "enrollment_unavailable"
+                    reason="no_slots" if len(used) >= coordinator.info["max_shutters"]
+                    else "enrollment_unavailable"
                 )
+            # Enrollment-capable firmware chooses a slot; a commands-only gateway can
+            # only adopt the paired records it already holds, offered by label.
+            schema = {vol.Required("name"): vol.All(str, vol.Length(min=1, max=100))}
+            placeholders = None
+            if can_provision:
+                schema[vol.Required("shutter_id", default=available[0])] = vol.In(available)
+            else:
+                if user_input is None:
+                    self._offer = (data["generation"], available[0])
+                labels = {slot: self._label(paired[slot]) for slot in available}
+                placeholders = {"recorded": "\n".join(f"- {label}" for label in labels.values())}
+                if len(available) > 1:
+                    schema[vol.Required("shutter_id", default=available[0])] = vol.In(labels)
+            self._form = ("user" if can_provision else "recorded", vol.Schema(schema), placeholders)
             if user_input is not None:
-                slot = user_input["shutter_id"]
+                slot = user_input.get("shutter_id")
+                if slot is None:  # name-only form: the single recorded shutter offered
+                    generation, slot = self._offer or (None, None)
+                    if generation != data["generation"]:
+                        return self.async_abort(reason="generation_changed")
                 if type(slot) is not int or slot not in available:
                     return self.async_abort(reason="already_configured")
                 record = ({**paired[slot], "generation": data["generation"]} if slot in paired
@@ -199,11 +241,14 @@ class ShutterFlow(ConfigSubentryFlow):
                 return await self.async_step_enroll()
         except (GatewayError, OSError, TimeoutError, ValueError) as exc:
             errors["base"] = _flow_error(exc)
-            available = list(range(1, 17))
-        return self.async_show_form(step_id="user", errors=errors, data_schema=vol.Schema({
-            vol.Required("name"): vol.All(str, vol.Length(min=1, max=100)),
-            vol.Required("shutter_id", default=available[0]): vol.In(available),
-        }))
+            if self._form is None:  # nothing known to offer yet: do not guess a slot list
+                return self.async_abort(reason=errors["base"])
+        step_id, schema, placeholders = self._form
+        return self.async_show_form(step_id=step_id, errors=errors, data_schema=schema,
+                                    description_placeholders=placeholders)
+
+    async def async_step_recorded(self, user_input=None):
+        return await self.async_step_user(user_input)
 
     async def _check_reference(self, *, refresh=True):
         coordinator = await self._coordinator() if refresh else self._get_entry().runtime_data

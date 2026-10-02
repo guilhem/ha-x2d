@@ -2,7 +2,6 @@
 
 from homeassistant.components.cover import CoverDeviceClass, CoverEntity, CoverEntityFeature
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import device_registry
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -11,14 +10,9 @@ from ._client import GatewayError
 
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
-    parent = device_registry.async_get(hass).async_get_or_create(
-        config_entry_id=entry.entry_id, identifiers={(DOMAIN, entry.runtime_data.info["device_id"])},
-        name=entry.title, manufacturer="ha-x2d", model="YD-RP2040 / CC1101",
-        sw_version=entry.runtime_data.info["firmware"],
-    )
     for subentry in entry.subentries.values():
         if subentry.subentry_type == "shutter":
-            async_add_entities([Shutter(entry.runtime_data, subentry, parent.id)],
+            async_add_entities([Shutter(entry.runtime_data, subentry)],
                                config_subentry_id=subentry.subentry_id)
 
 
@@ -32,7 +26,7 @@ class Shutter(CoordinatorEntity[GatewayCoordinator], CoverEntity):
     _attr_is_opening = None
     _attr_is_closing = None
 
-    def __init__(self, coordinator, subentry, parent_device_id):
+    def __init__(self, coordinator, subentry):
         super().__init__(coordinator)
         self.slot = subentry.data["shutter_id"]
         self.generation = subentry.data["state_generation"]
@@ -42,7 +36,7 @@ class Shutter(CoordinatorEntity[GatewayCoordinator], CoverEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, reference)}, name=subentry.title,
             manufacturer="ha-x2d", model="X2D shutter controller",
-            via_device_id=parent_device_id,
+            via_device_id=coordinator.device_id,
         )
 
     @property

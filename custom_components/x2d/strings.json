@@ -54,11 +54,19 @@
       "title": "Shutter",
       "step": {
         "user": {
-          "title": "Add a shutter",
-          "description": "Choose a stable slot. Reuse the same slot after an interrupted enrollment to retain its identity. These instructions cover only the observed Franciasoft / Well'com motor with its original BASE controller. Do not reset the motor.",
+          "title": "Pair a new shutter",
+          "description": "Choose a stable slot for a new pairing. Reuse the same slot after an interrupted pairing to retain its identity. These instructions cover only the observed Franciasoft / Well'com motor with its original BASE controller. Do not reset the motor.",
           "data": {
             "name": "Shutter name",
             "shutter_id": "Slot (1–16)"
+          }
+        },
+        "recorded": {
+          "title": "Add a recorded shutter",
+          "description": "The gateway already holds these paired shutters, which are not yet in Home Assistant:\n{recorded}\n\nName the shutter to add it, then test it. This only adds a shutter the gateway already has: nothing is paired, created or confirmed.",
+          "data": {
+            "name": "Shutter name",
+            "shutter_id": "Recorded shutter"
           }
         },
         "enroll": {
@@ -108,8 +116,10 @@
         "shutter_unavailable": "The shutter or connection is not ready for a command. This action does not reconnect or replay commands."
       },
       "abort": {
+        "cannot_connect": "Gateway unavailable. Check the USB connection and add the shutter again; no RF command is sent.",
+        "invalid_gateway": "The gateway protocol or identity is incompatible.",
         "no_slots": "All shutter slots on this gateway are already configured.",
-        "enrollment_unavailable": "The installed firmware does not yet support adding a new shutter. You can continue using your configured shutters.",
+        "enrollment_unavailable": "Every shutter recorded on the gateway is already in Home Assistant, and the installed firmware cannot pair a new shutter yet.",
         "already_configured": "This slot is already configured.",
         "generation_changed": "Gateway storage has changed. The old shutter reference cannot be reused.",
         "storage_corrupt": "Gateway storage is corrupt. No automatic reset or formatting is performed.",
