@@ -168,14 +168,14 @@ git submodule update --init --recursive
 devenv shell
 devenv test
 devenv tasks run firmware:build
-# Normal shutter commands after supervised pairing:
-devenv tasks run firmware:commands-build
 ```
 
-Outputs are `dist/ha_x2d-0.4.0-yd-rp2040-4mb-UNQUALIFIED-RADIO.uf2` (RF off) and
-`dist/ha_x2d-0.4.0-yd-rp2040-4mb-COMMANDS-ONLY-UNQUALIFIED-RADIO.uf2`.
-No build task flashes hardware. The commands-only build enables open, close and
-STOP for paired shutters and refuses new association/confirmation.
+The standard **0.4.1** firmware is `dist/ha_x2d-0.4.1-yd-rp2040-4mb.uf2`.
+It enables open, close and STOP for paired shutters by default and refuses new
+association/confirmation. The radio stays in IDLE until an explicit command;
+boot and USB reconnection transmit nothing. A failed radio configuration still
+refuses emission. No build task flashes hardware; RF qualification remains a
+separate hardware step.
 
 The **yd-rp2040-4mb-journal** profile fixes Arduino-Pico **6.1.1** and the physical
 4 MiB board's linker reservation. Its raw **64 KiB** journal starts at
@@ -207,11 +207,12 @@ requires reopening USB. Keep the USB link awake as described below.
 
 ### Supervised enrollment
 
-Default builds have `HA_X2D_COMMANDS_TX=0` and `HA_X2D_SUPERVISED_TX=0`.
+Standard builds have `HA_X2D_SUPERVISED_TX=0`; shutter commands are always enabled.
 An explicitly built private trial with `HA_X2D_SUPERVISED_TX=1` requires
 `HA_X2D_TRIAL_SUFFIX`, the locally observed identity suffix. The current RP2040
 trial is restricted to **slot 1** and is not a generally qualified pairing
-profile. The shared controller supports 16 slots; that does not authorize new
+profile. Its firmware version remains suffixed `-trial` (`0.4.1-trial`).
+The shared controller supports 16 slots; that does not authorize new
 RF identities on untested motors.
 
 `HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER` permits only **0** (one 0/1 attempt) or **2**

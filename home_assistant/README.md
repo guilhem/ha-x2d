@@ -26,14 +26,40 @@ or container to install. Only one process may own the USB serial port.
          device_class: shutter
    ```
 
-4. Follow the pairing procedure below. Each confirmed shutter appears
-   automatically; no per-shutter YAML is needed. Choose its display name and
+4. Create the two [pairing buttons](#pairing-buttons), then follow the pairing
+   procedure below. Each confirmed shutter appears automatically; no per-shutter
+   YAML is needed. Choose its display name and
    add it to dashboards or automations. Keep the `cover.x2d_` entity-ID prefix
    so the customization still matches.
 
-The default UF2 refuses RF while hardware qualification is pending. A supervised
-trial build enables the pairing procedure; after pairing, the commands-only
-build supports normal open, close and STOP operations.
+The standard **0.4.1** UF2 enables RF for normal open, close and STOP operations
+on paired shutters; no separate commands build is needed. New enrollment still
+requires a supervised trial build. Startup and discovery never transmit RF.
+
+## Pairing buttons
+
+MySensors presents the two pairing transports as switches. Create native,
+momentary button helpers to use them from the device page and dashboards:
+
+1. Open **Settings → Devices & services → Helpers → Create helper → Template →
+   Button**.
+2. Name the first button **X2D Pair shutter**, select the existing MySensors
+   dongle device in **Device**, and add one **Press action**: **Switch: Turn on**
+   (`switch.turn_on`), targeting the native **X2D Pair shutter** switch (child 17).
+3. Create **X2D Confirm pairing** the same way, attached to the same device,
+   targeting the native **X2D Confirm pairing** switch (child 18).
+4. In each native switch's entity settings, turn **Visible** off and leave
+   **Enabled** on. Hiding keeps the transport callable; disabling breaks its
+   button. Keep the button helpers visible and use them in dashboards/automations.
+
+These helpers remain editable in the HA UI and retain their device association
+after reload. No custom component or YAML template is needed. Creating or
+reloading a helper does not press it or transmit RF.
+
+Optionally set each helper's **Additional options → Availability template** to
+`{{ states('switch.your_transport_entity_id') not in ['unknown', 'unavailable'] }}`,
+using its actual target switch ID. This reflects the local transport entity's
+state; MySensors' cached availability still cannot prove the USB link is present.
 
 ## Entities and pairing
 
@@ -44,25 +70,26 @@ MySensors may also create its own battery entity for this mains-powered
 virtual node; disable it in HA, since the dongle reports no battery measurement.
 
 New enrollment requires an explicitly authorized **experimental trial build**.
-Neither the default nor the commands-only build enables it. Its suffix,
-initial counter and allowed retry still need qualification on the target motor.
+The standard build does not enable it. Its suffix, initial counter and allowed
+retry still need qualification on the target motor.
 
 1. Put the motor into its manufacturer-documented pairing mode under supervision.
-2. Turn **Pair shutter** ON once. The dongle resumes its unique pending slot or
+2. Press **Pair shutter** once. The dongle resumes its unique pending slot or
    selects the first unused slot. It persists a new identity and reserves both
-   counters before transmitting. The switch returns OFF even after refusal.
-3. Read the diagnostic. Each new attempt needs a fresh ON command and must satisfy
+   counters before transmitting. The hidden transport returns OFF even after refusal.
+3. Read the diagnostic. Each new attempt needs a fresh button press and must satisfy
    the compiled trial restrictions. Failed/uncertain attempts consume counters;
    rebooting cannot retry or recover those counters.
-4. Only after personally observing the motor response, turn **Confirm pairing**
-   ON. A reserved attempt and an idle radio are required. Confirmation is persisted
+4. Only after personally observing the motor response, press **Confirm pairing**.
+   A reserved attempt and an idle radio are required. Confirmation is persisted
    and the new cover is presented immediately. There is no RP2040 reboot.
 
 If power disappears after reservation, the pending identity and counters survive.
 Confirmation remains possible after restarting an appropriately authorized build;
 startup itself transmits nothing. Multiple pending slots and concurrent pairing
-operations are refused. OFF never starts an operation. Both switches return OFF
-on processing, refusal and reconnection.
+operations are refused. The underlying transports' OFF value never starts an
+operation. Both transports return OFF on processing, refusal and reconnection;
+the buttons themselves have no ON/OFF state.
 
 ## State, diagnostics and USB loss
 
@@ -111,6 +138,10 @@ A full reset is a separate, explicit maintenance operation:
    Remove stale entity/device references and old automations as appropriate.
 4. Only then perform the separately authorized flash reset and new associations.
    Do not restore the old MySensors persistence into the new journal generation.
+
+Deleting the MySensors device detaches the button helpers. After maintenance,
+edit both helpers to select the new device and verify/update their switch action
+targets. Hide the new transport switches and keep them enabled as above.
 
 This procedure is not part of ordinary upgrades, and no reset command is exposed
 by the dongle. Restoring an old HA backup never restores radio counters.

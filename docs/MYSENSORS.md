@@ -25,6 +25,19 @@ SET payload `1` on cover UP/DOWN/STOP or switch STATUS can submit an operation.
 SET `0` is inert. Broadcast actuator SET, percentages, tilt, stream and
 unsupported values cannot reach the radio. Switches always return OFF.
 
+For HA's user-facing controls, create two native **Template → Button** helpers,
+each attached to the existing MySensors device with one press action:
+`switch.turn_on` on the child 17 or 18 transport respectively. Hide those native
+switches (`hidden_by: user`) while keeping them enabled (`disabled_by: null`).
+The helpers remain UI-editable, retain their device association after reload,
+and expose momentary buttons without changing this wire protocol. Helper setup
+and reload do not send actuator SET or RF. See the
+[button setup](../home_assistant/README.md#pairing-buttons).
+
+The standard firmware **0.4.1** enables RF for paired-shutter commands by default;
+no separate commands build is required. New enrollment remains gated by an
+explicitly authorized supervised trial build.
+
 Recognized SET messages requesting an echo receive their exact value with echo
 1, before admission; the echo means receipt, even on refusal. Read requests
 receive SET snapshots (with the requested echo flag). Radio results/refusals
@@ -57,3 +70,6 @@ full flash reset, explicitly remove HA's corresponding device and persisted
 MySensors node while the integration is stopped. Never restore an old sensor
 inventory against a new journal. HA can retain stale displayed availability
 when USB disappears; the protocol cannot make that a radio guarantee.
+Removing the HA device detaches its button helpers: after a maintenance reset,
+reselect the new device, verify their action targets, and hide the new transport
+switches while keeping them enabled.

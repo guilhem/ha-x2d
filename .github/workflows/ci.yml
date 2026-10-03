@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        profile: [default, commands, trial0, trial2, rx-debug, tx-check]
+        profile: [default, trial0, trial2, rx-debug, tx-check]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,7 +57,6 @@ jobs:
           flags=()
           sketch=ha_x2d
           case "$PROFILE" in
-            commands) flags+=(--build-property compiler.cpp.extra_flags=-DHA_X2D_COMMANDS_TX=1) ;;
             trial0|trial2)
               flags+=(--build-property "compiler.cpp.extra_flags=-DHA_X2D_SUPERVISED_TX=1 -DHA_X2D_TRIAL_SUFFIX=90 -DHA_X2D_TRIAL_EXPECTED_NEXT_COUNTER=${PROFILE#trial}") ;;
             rx-debug) sketch=rx_debug ;;

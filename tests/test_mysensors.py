@@ -646,6 +646,68 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((command["action"], command["counter"], command["identity"] & 0xFF),
                              (OPEN, 2, 0x5A))  # the enrollment reserved counters 0 and 1
 
+    async def test_native_pairing_buttons_keep_hidden_transports_enabled_and_survive_reload(self):
+        async with self.system("--paired=0", "--enrollment", "--authorize=1:5A:0", covers=0) as rig:
+            registry = entity_registry.async_get(rig.hass)
+            device, = device_registry.async_entries_for_config_entry(
+                device_registry.async_get(rig.hass), rig.entry.entry_id)
+            buttons = {}
+            for child, name in ((PAIR, "X2D Pair shutter"), (CONFIRM, "X2D Confirm pairing")):
+                transport = rig.entity_id("switch", child)
+                registry.async_update_entity(transport, hidden_by=entity_registry.RegistryEntryHider.USER)
+                manager = rig.hass.config_entries.flow
+                flow = await manager.async_init("template", context={"source": "user"})
+                flow = await manager.async_configure(flow["flow_id"], {"next_step_id": "button"})
+                flow = await manager.async_configure(flow["flow_id"], {
+                    "name": name, "device_id": device.id,
+                    "press": [{"action": "switch.turn_on", "target": {"entity_id": transport}}]})
+                self.assertEqual(flow["type"], "create_entry", flow)
+                entry = flow["result"]
+                await rig.hass.async_block_till_done()  # actions are validated during entity setup
+                button, = entity_registry.async_entries_for_config_entry(registry, entry.entry_id)
+                self.assertEqual(button.domain, "button")
+                self.assertEqual(button.device_id, device.id)
+                self.assertIsNotNone(rig.hass.states.get(button.entity_id))
+                buttons[child] = (entry, button)
+            self.assertEqual(rig.dongle.bursts(), [])
+
+            for paired in (False, True):
+                for child, (entry, button) in buttons.items():
+                    options = dict(entry.options)
+                    self.assertTrue(await rig.hass.config_entries.async_reload(entry.entry_id))
+                    await rig.hass.async_block_till_done()
+                    restored = registry.async_get(button.entity_id)
+                    self.assertEqual((restored.id, restored.unique_id, restored.device_id),
+                                     (button.id, button.unique_id, device.id))
+                    self.assertEqual(entry.options, options)
+                    self.assertEqual(entry.options["device_id"], device.id)
+                    self.assertIsNotNone(rig.hass.states.get(button.entity_id))
+                    transport = registry.async_get(rig.entity_id("switch", child))
+                    self.assertEqual(transport.hidden_by, entity_registry.RegistryEntryHider.USER)
+                    self.assertIsNone(transport.disabled_by)
+                    self.assertEqual(rig.switch(child).state, "off")
+                await asyncio.sleep(0.3)  # observe any serial work triggered by setup/reload
+                self.assertEqual(len(rig.dongle.bursts()), 2 if paired else 0)
+                for child in buttons:
+                    command = f"{NODE};{child};1;1;{V_STATUS};1"
+                    self.assertEqual(rig.dongle.from_host.count(command), int(paired))
+                if paired:
+                    continue
+
+                await rig.hass.services.async_call(
+                    "button", "press", {"entity_id": buttons[PAIR][1].entity_id}, blocking=True)
+                await self.burst_done(rig, 2)  # one transport command, two enrollment phases
+                await until(lambda: rig.diagnostic() == "1:awaiting_confirmation", "the awaiting diagnostic")
+                await until(lambda: rig.switch(PAIR).state == "off", "the pairing transport reset")
+                self.assertEqual(rig.covers(), {})
+                await rig.hass.services.async_call(
+                    "button", "press", {"entity_id": buttons[CONFIRM][1].entity_id}, blocking=True)
+                await until(lambda: len(rig.covers()) == 1, "the confirmed cover")
+                await until(lambda: rig.diagnostic() == "1:paired,pos_unknown", "the paired diagnostic")
+                await until(lambda: rig.switch(CONFIRM).state == "off", "the confirmation transport reset")
+                for entry, button in buttons.values():
+                    self.assertNotIn(rig.hass.states.get(button.entity_id).state, {"on", "off"})
+
 
 class FrontendChecks(unittest.TestCase):
     """Structure of the installed frontend bundle only; nothing is rendered."""

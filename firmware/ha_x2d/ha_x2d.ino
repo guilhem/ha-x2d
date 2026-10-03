@@ -26,13 +26,8 @@ constexpr uint8_t PIN_CS = 17;
 constexpr uint8_t PIN_SCK = 18;
 constexpr uint8_t PIN_MOSI = 19;
 
-// Default builds keep RF disabled. The commands-only build uses identities
-// already paired in the journal; new enrollment remains a separate trial.
-#ifndef HA_X2D_COMMANDS_TX
-#define HA_X2D_COMMANDS_TX 0
-#endif
-static_assert(HA_X2D_COMMANDS_TX == 0 || HA_X2D_COMMANDS_TX == 1,
-              "commands TX must be 0 or 1");
+// Standard builds transmit commands for identities already paired in the
+// journal; new enrollment remains a separately authorized supervised trial.
 #ifndef HA_X2D_SUPERVISED_TX
 #define HA_X2D_SUPERVISED_TX 0
 #endif
@@ -52,7 +47,6 @@ static_assert(HA_X2D_TRIAL_SUFFIX >= 0 && HA_X2D_TRIAL_SUFFIX <= 255,
 static_assert(HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER == 0 ||
               HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER == 2,
               "trial expected next counter must be 0 or 2");
-constexpr bool TX_ENABLED = HA_X2D_COMMANDS_TX || HA_X2D_SUPERVISED_TX;
 constexpr bool ENROLLMENT_ENABLED = HA_X2D_SUPERVISED_TX;
 
 class BoardFlash final : public x2d::journal::Flash {
@@ -154,7 +148,7 @@ class RadioOutput {
 struct Policy {
   uint32_t random_u32() { return rp2040.hwrand32(); }
   const char* firmware() {
-    return HA_X2D_SUPERVISED_TX ? "0.4.0-trial" : HA_X2D_COMMANDS_TX ? "0.4.0-commands" : "0.4.0";
+    return HA_X2D_SUPERVISED_TX ? "0.4.1-trial" : "0.4.1";
   }
 } policy;
 
@@ -193,12 +187,12 @@ void setup() {
   SPI.setSCK(PIN_SCK);
   SPI.begin();
   radio.reset();  // CC1101 manual reset; no frequency or transmit registers are set
-  if (TX_ENABLED) radio.configure_transmitter();
+  radio.configure_transmitter();  // verifies the profile while remaining in IDLE
   gateway.emplace(journal, radio_output, policy, device_id);
   const x2d::PairingAuthorization trial{
       HA_X2D_SUPERVISED_TX ? uint8_t{1} : uint8_t{0},
       HA_X2D_TRIAL_SUFFIX, HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER};
-  gateway->begin(TX_ENABLED, ENROLLMENT_ENABLED,
+  gateway->begin(true, ENROLLMENT_ENABLED,
                  x2d::radio::digital_tx::DEFAULT_CHIP_NS, trial);
 }
 

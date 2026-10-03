@@ -118,6 +118,29 @@ static void parser_and_discovery() {
   assert(!rig.radio.starts);
 }
 
+static void standard_policy() {
+  journal::MemoryFlash flash;
+  paired(flash);
+  Rig rig(flash);  // TX enabled, supervised enrollment disabled
+  has(rig.drain(), "ready,pos_unknown");
+  const auto writes = flash.programs();
+  rig.tick();
+  rig.gateway.disconnected();
+  rig.gateway.connected();
+  rig.tick();
+  rig.drain();
+  rig.feed("1;17;1;1;2;1\n1;18;1;1;2;1\n");
+  has(rig.drain(), "association_disabled");
+  rig.tick();
+  assert(rig.radio.starts == 0 && rig.next() == 10 && flash.programs() == writes);
+  assert(rig.journal.shutter(2).state == journal::SlotState::unused);
+  rig.radio.healthy = false;
+  rig.feed("1;1;1;1;29;1\n");
+  has(rig.drain(), "tx_off,pos_unknown");
+  rig.tick();
+  assert(rig.radio.starts == 0 && rig.next() == 10 && flash.programs() == writes);
+}
+
 static void commands_stop_and_reconnect() {
   journal::MemoryFlash flash;
   paired(flash);
@@ -224,6 +247,7 @@ static void slow_host() {
 
 int main() {
   parser_and_discovery();
+  standard_policy();
   commands_stop_and_reconnect();
   pairing_power_loss_and_corruption();
   slow_host();
