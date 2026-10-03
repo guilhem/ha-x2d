@@ -8,7 +8,7 @@ and rolling counters. Connect the dongle directly to Home Assistant over USB.
 Home Assistant / MySensors → USB → RP2040 / x2d-core → CC1101 → shutter
 ```
 
-**Experimental radio support.** Standard firmware **0.4.1** enables RF commands
+**Experimental radio support.** Standard firmware **0.5.0** enables RF commands
 for paired shutters by default. New enrollment requires a supervised trial build.
 Association and motor commands still need qualification with this firmware on real hardware.
 See [hardware qualification](home_assistant/README.md#hardware-qualification).
@@ -92,3 +92,5 @@ Software checks are separate from HA OS / dongle / motor qualification.
 
 The radio transform derives from mr-sven's work under
 [Apache-2.0](research/LICENSE-APACHE); see the core's LICENSE and NOTICE.
+
+Firmware updates can use the existing USB connection: [install and update the dongle](docs/FIRMWARE_UPDATE.md).

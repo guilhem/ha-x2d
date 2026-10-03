@@ -2,7 +2,8 @@
 
 Wire format: `node;child;command;echo;type;payload\n`, 115200 baud, MySensors 2.3.
 ASCII header fields are unsigned bytes; command 0–4, echo 0–1; payload at most
-25 bytes. Input lines are bounded to 63 bytes before LF, CRLF accepted. Invalid
+25 bytes for ordinary messages, or 50 hexadecimal characters for binary streams.
+Input lines are bounded to 95 bytes before LF, CRLF accepted. Invalid
 or oversized input is discarded through the next LF and reported. Output is a
 4096-byte ring; radio service never waits for a reader. Overflow closes command
 admission, cancels pending work and stops active RF at a frame boundary. The
@@ -22,7 +23,7 @@ The adapter handles gateway version, discovery, presentation and heartbeat
 requests. These and reads never submit RF. It sends no REQ, state-restoration
 request, SmartSleep notification or queued command on reconnect. Only explicit
 SET payload `1` on cover UP/DOWN/STOP or switch STATUS can submit an operation.
-SET `0` is inert. Broadcast actuator SET, percentages, tilt, stream and
+SET `0` is inert. Broadcast actuator SET, percentages, tilt and
 unsupported values cannot reach the radio. Switches always return OFF.
 
 For HA's user-facing controls, create two native **Template → Button** helpers,
@@ -34,7 +35,7 @@ and expose momentary buttons without changing this wire protocol. Helper setup
 and reload do not send actuator SET or RF. See the
 [button setup](../home_assistant/README.md#pairing-buttons).
 
-The standard firmware **0.4.1** enables RF for paired-shutter commands by default;
+The standard firmware **0.5.0** enables RF for paired-shutter commands by default;
 no separate commands build is required. New enrollment remains gated by an
 explicitly authorized supervised trial build.
 
@@ -73,3 +74,6 @@ when USB disappears; the protocol cannot make that a radio guarantee.
 Removing the HA device detaches its button helpers: after a maintenance reset,
 reselect the new device, verify their action targets, and hide the new transport
 switches while keeping them enabled.
+
+Firmware stream messages are handled separately from actuator commands; see the
+[OTA wire contract](FIRMWARE_UPDATE.md#mysensors-wire-contract).

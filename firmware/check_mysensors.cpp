@@ -91,6 +91,18 @@ static void parser_and_discovery() {
   assert(!mysensors::decode(with_nul.data(), with_nul.size(), message));
   const std::string good = "1;1;1;1;29;1";
   assert(mysensors::decode(good.data(), good.size(), message) && message.type == 29);
+  const std::string stream = "1;255;4;0;3;" + std::string(50, 'A');
+  assert(mysensors::decode(stream.data(), stream.size(), message));
+  assert(strlen(message.payload) == 50);
+  for (const std::string &bad : {
+       "1;255;4;0;3;" + std::string(52, 'A'),
+       "1;255;4;0;3;" + std::string(49, 'A'),
+       "1;255;4;0;3;" + std::string(44, 'G'),
+       "1;255;3;0;9;" + std::string(26, 'A'),
+       "1;255;1;0;24;" + std::string(44, 'A')})
+    assert(!mysensors::decode(bad.data(), bad.size(), message));
+  const std::string text = "1;255;3;0;9;" + std::string(25, 'Z');
+  assert(mysensors::decode(text.data(), text.size(), message));
   journal::MemoryFlash flash;
   paired(flash, 16);
   Rig rig(flash);

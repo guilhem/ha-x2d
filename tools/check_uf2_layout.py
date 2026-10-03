@@ -3,7 +3,7 @@ import argparse
 from pathlib import Path
 import struct
 
-JOURNAL_ADDRESS = 0x101FF000  # YD 4MiB / 2MiB FS; first 64KiB belongs to journal
+from firmware_layout import JOURNAL_ADDRESS
 FAMILY = 0xE48BFF56
 
 

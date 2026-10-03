@@ -7,6 +7,7 @@
 //                    [--device-id=HEX16] [--generation=HEX16] [--identity-base=HEX6]
 //                    [--seed=N] [--no-tx] [--enrollment] [--authorize=SLOT:SUFFIX:COUNTER]
 //                    [--fault=none|unavailable|start|poll]
+//                    [--ota-file=PATH] [--ota-prefix=PATH]
 //
 //   --paired=N     slots 1..N confirmed on first use of EMPTY storage (default 16,
 //                  0 = leave the journal empty). A populated journal is never
@@ -19,6 +20,11 @@
 //   --fault=...    radio faults: unavailable (available() is false), start
 //                  (start_burst refuses), poll (the burst reports unknown).
 //   --authorize    PairingAuthorization{slot, identity suffix (hex), next counter}.
+//   --ota-file     enable TEST-ONLY OTA storage; save the 16-byte-padded image
+//                  here and acknowledge staging without rebooting the simulator.
+//   --ota-prefix   reference image/prefix: read its first 0x3000 bytes BEFORE
+//                  receiving OTA. Without it, byte i is (37*i + 11) & 255,
+//                  matching check_ota's synthetic image. Requires --ota-file.
 //
 // stdin/stdout carry serial bytes only. EOF on stdin exits after the output is
 // flushed. --control-fd is an inherited bidirectional stream socket; without it
@@ -50,9 +56,11 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <optional>
 #include <string>
 
 #include "mysensors.h"
+#include "image_layout.h"
 
 using namespace x2d;
 
@@ -160,6 +168,7 @@ class SimRadio {
   bool held = false, unavailable = false, fail_start = false, fail_poll = false;
 
   bool available() const { return !unavailable; }
+  bool active() const { return running_; }
   bool start_burst(const radio::Waveform& wave, uint32_t chip_ns, uint32_t& started_ms) {
     if (running_ || !chip_ns || !wave.copies()) abort();
     if (fail_start) return false;
@@ -214,6 +223,80 @@ class SimRadio {
   uint8_t completed_ = 0, stop_at_ = 0;
 };
 
+// Test fixture only: a host file stands in for board flash and boot commands.
+// Verify the real file readback against an independent reference prefix and
+// ImageVerifier. No PicoOTA command is created and no simulator reboot occurs.
+class FileOTAStorage final : public ota::Storage {
+ public:
+  FileOTAStorage(SimRadio &radio, const std::string &path, const std::string &prefix)
+      : radio_(radio), path_(path) {
+    for (size_t i = 0; i < sizeof(prefix_); ++i) prefix_[i] = static_cast<uint8_t>(37 * i + 11);
+    if (prefix.empty()) return;
+    FILE *source = fopen(prefix.c_str(), "rb");
+    if (!source) {
+      fprintf(stderr, "cannot open OTA reference prefix %s\n", prefix.c_str());
+      exit(1);
+    }
+    const size_t got = fread(prefix_, 1, sizeof(prefix_), source);
+    const bool closed = fclose(source) == 0;
+    if (got != sizeof(prefix_) || !closed) {
+      fprintf(stderr, "OTA reference prefix must contain at least 0x3000 bytes: %s\n", prefix.c_str());
+      exit(1);
+    }
+  }
+  ~FileOTAStorage() override { abort(); }
+  bool begin(uint32_t bytes) override {
+    if (committed_ || radio_.active() || bytes <= ota::APPLICATION_OFFSET + 8 ||
+        bytes > ota::MAX_BLOCKS * ota::BLOCK_BYTES || bytes % ota::BLOCK_BYTES) return false;
+    abort();
+    file_ = fopen(path_.c_str(), "w+b");
+    expected_ = bytes;
+    created_ = file_ != nullptr;
+    return created_;
+  }
+  bool write(const uint8_t *block, size_t length) override {
+    if (!file_ || radio_.active() || length != ota::BLOCK_BYTES ||
+        written_ > expected_ || length > expected_ - written_ ||
+        fwrite(block, 1, length, file_) != length) return false;
+    written_ += static_cast<uint32_t>(length);
+    return true;
+  }
+  bool finish(uint16_t crc) override {
+    if (!file_ || radio_.active() || written_ != expected_ || fflush(file_) ||
+        fsync(fileno(file_)) || fseek(file_, 0, SEEK_SET)) return false;
+    ota::ImageVerifier verifier(prefix_, expected_, crc);
+    uint8_t buffer[256];
+    uint32_t offset = 0;
+    while (offset < expected_) {
+      const size_t length = expected_ - offset < sizeof(buffer) ? expected_ - offset : sizeof(buffer);
+      if (fread(buffer, 1, length, file_) != length || !verifier.add(buffer, length)) return false;
+      offset += static_cast<uint32_t>(length);
+    }
+    if (fgetc(file_) != EOF || ferror(file_) || !verifier.finish()) return false;
+    const bool closed = fclose(file_) == 0;
+    file_ = nullptr;
+    if (!closed) return false;
+    committed_ = true;
+    report("ota staged bytes=%u crc=%04X file=%s", static_cast<unsigned>(expected_),
+           static_cast<unsigned>(crc), path_.c_str());
+    return true;
+  }
+  void abort() override {
+    if (committed_) return;
+    if (file_) { fclose(file_); file_ = nullptr; }
+    if (created_) unlink(path_.c_str());
+    created_ = false;
+    expected_ = written_ = 0;
+  }
+ private:
+  SimRadio &radio_;
+  std::string path_;
+  uint8_t prefix_[ota::APPLICATION_OFFSET]{};
+  FILE *file_ = nullptr;
+  uint32_t expected_ = 0, written_ = 0;
+  bool created_ = false, committed_ = false;
+};
+
 // Firmware policy: deterministic entropy, so a run is reproducible.
 struct Policy {
   uint32_t state = 1;
@@ -231,7 +314,7 @@ struct Options {
   uint32_t burst_ms = 80, paired = journal::SLOTS, seed = 1;
   uint64_t generation = 0x0123456789ABCDEFull;
   uint32_t identity_base = 0xA00000;
-  std::string device_id = "0123456789ABCDEF", journal_file;
+  std::string device_id = "0123456789ABCDEF", journal_file, ota_file, ota_prefix;
   bool tx = true, enrollment = false, unavailable = false, fail_start = false, fail_poll = false;
   PairingAuthorization authorization{};
 };
@@ -263,6 +346,8 @@ bool parse(int argc, char** argv, Options& options) {
     else if (name == "--identity-base" && number(value, 0xFF0000, 16, n) && !(n & 0xFFFF)) options.identity_base = static_cast<uint32_t>(n);
     else if (name == "--device-id") options.device_id = value;
     else if (name == "--journal" && has_value) options.journal_file = value;
+    else if (name == "--ota-file" && has_value && !value.empty()) options.ota_file = value;
+    else if (name == "--ota-prefix" && has_value && !value.empty()) options.ota_prefix = value;
     else if (name == "--fault" && value == "none") {}
     else if (name == "--fault" && value == "unavailable") options.unavailable = true;
     else if (name == "--fault" && value == "start") options.fail_start = true;
@@ -275,7 +360,7 @@ bool parse(int argc, char** argv, Options& options) {
       options.authorization = {static_cast<uint8_t>(slot), static_cast<uint8_t>(suffix), counter};
     } else return false;
   }
-  return true;
+  return options.ota_prefix.empty() || !options.ota_file.empty();
 }
 
 void provision_paired(journal::Journal& journal, const Options& options) {
@@ -305,6 +390,7 @@ int main(int argc, char** argv) {
     fputs("usage: mysensors_server [--control-fd=N] [--burst-ms=N] [--paired=N] [--journal=FILE]\n"
           "       [--device-id=HEX16] [--generation=HEX16] [--identity-base=HEX6] [--seed=N]\n"
           "       [--no-tx] [--enrollment]\n"
+          "       [--ota-file=PATH] [--ota-prefix=PATH] (test storage, no reboot)\n"
           "       [--authorize=SLOT:SUFFIX:COUNTER] [--fault=none|unavailable|start|poll]\n",
           stderr);
     return 2;
@@ -330,7 +416,10 @@ int main(int argc, char** argv) {
   radio.fail_poll = options.fail_poll;
   Policy policy;
   policy.state = options.seed;
-  mysensors::Gateway<SimRadio, Policy> gateway(journal, radio, policy, options.device_id.c_str());
+  std::optional<FileOTAStorage> ota_storage;
+  if (!options.ota_file.empty()) ota_storage.emplace(radio, options.ota_file, options.ota_prefix);
+  mysensors::Gateway<SimRadio, Policy> gateway(journal, radio, policy, options.device_id.c_str(),
+                                             ota_storage ? &*ota_storage : nullptr);
   gateway.begin(options.tx, options.enrollment, 208500, options.authorization);
   char generation[17] = "none";
   journal.generation_hex(generation);

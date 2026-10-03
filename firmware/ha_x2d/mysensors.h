@@ -4,23 +4,31 @@
 #include <string_view>
 #include <x2d/controller.h>
 #include "serial.h"
+#include "ota.h"
 
 // MySensors 2.x serial API, one USB gateway and one fixed virtual node.
-// No MySensors radio network, state restoration, SmartSleep, heap or JSON.
+// No MySensors radio network, state restoration, SmartSleep or JSON.
 namespace x2d::mysensors {
 
 constexpr uint8_t NODE = 1, PAIR = 17, CONFIRM = 18, DIAGNOSTIC = 19, SYSTEM = 255;
-constexpr uint8_t PRESENTATION = 0, SET = 1, REQ = 2, INTERNAL = 3;
+constexpr uint8_t PRESENTATION = 0, SET = 1, REQ = 2, INTERNAL = 3, STREAM = 4;
 constexpr uint8_t S_BINARY = 3, S_COVER = 5, S_NODE = 17, S_CUSTOM = 23;
 constexpr uint8_t V_STATUS = 2, V_VAR1 = 24, V_UP = 29, V_DOWN = 30, V_STOP = 31;
-constexpr uint8_t I_VERSION = 2, I_SKETCH_NAME = 11, I_SKETCH_VERSION = 12,
-                  I_GATEWAY_READY = 14, I_HEARTBEAT_REQUEST = 18, I_PRESENTATION = 19,
+constexpr uint8_t I_VERSION = 2, I_LOG_MESSAGE = 9, I_SKETCH_NAME = 11, I_SKETCH_VERSION = 12,
+                  I_REBOOT = 13, I_GATEWAY_READY = 14, I_HEARTBEAT_REQUEST = 18, I_PRESENTATION = 19,
                   I_DISCOVER = 20, I_DISCOVER_RESPONSE = 21, I_HEARTBEAT_RESPONSE = 22;
-constexpr size_t PAYLOAD_BYTES = 25, LINE_BYTES = 64;
+constexpr size_t PAYLOAD_BYTES = 25, STREAM_HEX_BYTES = 2 * PAYLOAD_BYTES, LINE_BYTES = 96;
+
+inline bool valid_payload(uint8_t command, const char *text, size_t length) {
+  if (command != STREAM) return length <= PAYLOAD_BYTES;
+  if (length > STREAM_HEX_BYTES || length % 2) return false;
+  for (size_t i = 0; i < length; ++i) if (ota::nibble(text[i]) < 0) return false;
+  return true;
+}
 
 struct Message {
   uint8_t node = 0, child = 0, command = 0, echo = 0, type = 0;
-  char payload[PAYLOAD_BYTES + 1]{};
+  char payload[STREAM_HEX_BYTES + 1]{};
 };
 
 inline bool decode(const char *bytes, size_t length, Message &message) {
@@ -36,7 +44,8 @@ inline bool decode(const char *bytes, size_t length, Message &message) {
     if (!digits || value > 255 || pos == length || bytes[pos++] != ';') return false;
     field = static_cast<uint8_t>(value);
   }
-  if (fields[2] > 4 || fields[3] > 1 || length - pos > PAYLOAD_BYTES) return false;
+  if (fields[2] > STREAM || fields[3] > 1 ||
+      !valid_payload(fields[2], bytes + pos, length - pos)) return false;
   for (size_t i = pos; i < length; ++i)
     if (bytes[i] < 32 || bytes[i] > 126) return false;
   message = {fields[0], fields[1], fields[2], fields[3], fields[4], {}};
@@ -50,8 +59,9 @@ inline bool decode(const char *bytes, size_t length, Message &message) {
 // cancels its work outside observer callbacks and still services the radio.
 template<class Radio, class Policy> class Gateway {
  public:
-  Gateway(journal::Journal &journal, Radio &radio, Policy &policy, const char *device_id)
-      : policy_(policy), controller_(journal, radio, *this) {
+  Gateway(journal::Journal &journal, Radio &radio, Policy &policy, const char *device_id,
+          ota::Storage *storage = nullptr)
+      : policy_(policy), controller_(journal, radio, *this), ota_(storage, *this) {
     invalid_ = !hex16(device_id);
     if (!invalid_) memcpy(device_id_, device_id, sizeof(device_id_));
   }
@@ -62,13 +72,14 @@ template<class Radio, class Policy> class Gateway {
   void connected() {
     if (connected_ || invalid_) return;
     connected_ = true;
-    controller_.resume();
+    if (!updating()) controller_.resume();
     send(0, SYSTEM, INTERNAL, 0, I_GATEWAY_READY, "Gateway startup complete.");
     present();
   }
   void disconnected() {
     if (!connected_ && !failed_) return;
     connected_ = false;  // cancellation callbacks must not publish old replies
+    ota_.cancel();  // a committed boot command survives connection loss
     controller_.pause();
     input_.reset();
     output_.clear();
@@ -84,6 +95,7 @@ template<class Radio, class Policy> class Gateway {
       controller_.pause();
     }
     controller_.tick(now);
+    ota_.tick(now, connected_ && !failed());
   }
   size_t feed(const char *bytes, size_t length) {
     if (!connected_ || failed() || !bytes) return 0;
@@ -92,14 +104,18 @@ template<class Radio, class Policy> class Gateway {
       const auto event = input_.feed(bytes[i]);
       if (event == LineFramer::Event::none) continue;
       Message message;
-      if (event == LineFramer::Event::too_long || !decode(input_.data(), input_.length, message))
+      if (event == LineFramer::Event::too_long || !decode(input_.data(), input_.length, message)) {
+        ota_.invalid_message();
         status("invalid_message", 0);
-      else dispatch(message);
+      } else dispatch(message);
       return i + 1;
     }
     return length;
   }
   bool failed() const { return invalid_ || failed_; }
+  bool updating() const { return ota_.updating(); }
+  bool ota_committed() const { return ota_.committed(); }
+  bool reboot_requested() const { return ota_committed() && reboot_requested_; }
   size_t output_size() const { return output_.size(); }
   size_t output_contiguous() const { return output_.contiguous(); }
   const char *output_data() const { return output_.data(); }
@@ -152,12 +168,23 @@ template<class Radio, class Policy> class Gateway {
   }
 
  private:
+  friend class ota::Receiver<Gateway>;
+  bool ota_stream(uint8_t type, const char *payload) {
+    return send(NODE, SYSTEM, STREAM, 0, type, payload);
+  }
+  bool ota_log(const char *payload) {
+    return send(NODE, SYSTEM, INTERNAL, 0, I_LOG_MESSAGE, payload);
+  }
+  void ota_pause() { controller_.pause("ota_busy"); }
+  void ota_resume() { if (connected_ && !failed()) controller_.resume(); }
+  bool ota_quiescent() const { return !controller_.active(); }
+
   bool send(uint8_t node, uint8_t child, uint8_t command, uint8_t echo,
             uint8_t type, const char *payload) {
     if (!connected_ || failed()) return false;
     char line[LINE_BYTES];
     const int size = snprintf(line, sizeof(line), "%u;%u;%u;%u;%u;%s\n", node, child, command, echo, type, payload);
-    if (strlen(payload) > PAYLOAD_BYTES || size <= 0 || static_cast<size_t>(size) >= sizeof(line) ||
+    if (!valid_payload(command, payload, strlen(payload)) || size <= 0 || static_cast<size_t>(size) >= sizeof(line) ||
         !output_.append(line, static_cast<size_t>(size))) {
       failed_ = true;
       output_.clear();
@@ -201,9 +228,24 @@ template<class Radio, class Policy> class Gateway {
   }
   void dispatch(const Message &message) {
     const auto &m = message;
+    if (m.node == NODE && m.child == SYSTEM && m.command == STREAM) {
+      if (m.type == ota::CONFIG_REQUEST && !*m.payload) {
+        char id[PAYLOAD_BYTES + 1];
+        snprintf(id, sizeof(id), "ota_id:%s", device_id_);
+        if (!ota_log(id)) return;
+        uint8_t bytes[8]{};
+        ota::put_u16(bytes, ota::FIRMWARE_TYPE);
+        ota::put_u16(bytes + 2, ota::VERSION);
+        char config[17];
+        ota::encode_hex(bytes, sizeof(bytes), config);
+        ota_stream(ota::CONFIG_REQUEST, config);
+      } else ota_.receive(m.type, m.payload, now_);
+      return;
+    }
     if (m.command == INTERNAL && m.child == SYSTEM &&
         (m.node == 0 || m.node == NODE || m.node == 255)) {
       if (m.type == I_VERSION) send(m.node == 0 ? 0 : NODE, SYSTEM, INTERNAL, 0, I_VERSION, "2.3.2");
+      else if (m.type == I_REBOOT && m.node == NODE && !*m.payload && ota_committed()) reboot_requested_ = true;
       else if (m.type == I_DISCOVER) send(NODE, SYSTEM, INTERNAL, 0, I_DISCOVER_RESPONSE, "0");
       else if (m.type == I_PRESENTATION) present();
       else if (m.type == I_HEARTBEAT_REQUEST) {
@@ -226,6 +268,7 @@ template<class Radio, class Policy> class Gateway {
       return;
     }
     if (m.command != SET) return;
+    if (updating()) { status("ota_busy", m.child); return; }
     const bool action = cover && (m.type == V_UP || m.type == V_DOWN || m.type == V_STOP);
     const bool valid = (action || (button && m.type == V_STATUS)) &&
                        (!strcmp(m.payload, "1") || !strcmp(m.payload, "0"));
@@ -260,11 +303,13 @@ template<class Radio, class Policy> class Gateway {
 
   Policy &policy_;
   Controller<Radio, Gateway> controller_;
+  ota::Receiver<Gateway> ota_;
   LineFramer input_{LINE_BYTES};
   OutputBuffer output_;
   char device_id_[17]{}, diagnostic_[PAYLOAD_BYTES + 1]{};
   uint8_t positions_[MAX_SHUTTERS]{};  // 0 unknown, 1 assumed open, 2 assumed closed
   uint32_t now_ = 0;
+  bool reboot_requested_ = false;
   bool connected_ = false, invalid_ = false, failed_ = false, stopped_ = false, terminal_unknown_ = false;
 };
 

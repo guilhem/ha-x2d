@@ -54,16 +54,15 @@ jobs:
         env:
           PROFILE: ${{ matrix.profile }}
         run: |
-          flags=()
+          cpp_flags=''
           sketch=ha_x2d
           case "$PROFILE" in
             trial0|trial2)
-              flags+=(--build-property "compiler.cpp.extra_flags=-DHA_X2D_SUPERVISED_TX=1 -DHA_X2D_TRIAL_SUFFIX=90 -DHA_X2D_TRIAL_EXPECTED_NEXT_COUNTER=${PROFILE#trial}") ;;
+              cpp_flags="-DHA_X2D_SUPERVISED_TX=1 -DHA_X2D_TRIAL_SUFFIX=90 -DHA_X2D_TRIAL_EXPECTED_NEXT_COUNTER=${PROFILE#trial}" ;;
             rx-debug) sketch=rx_debug ;;
             tx-check) sketch=tx_check ;;
           esac
-          arduino-cli compile --profile yd-rp2040-4mb-journal "${flags[@]}" --output-dir build/firmware "firmware/$sketch"
-          python tools/check_uf2_layout.py "build/firmware/$sketch.ino.uf2"
+          python tools/build_firmware.py "$sketch" --cpp-flags="$cpp_flags" --output-dir build/firmware
           # Trial suffix 90 is synthetic; these validation artifacts are not published.
 
   esphome:

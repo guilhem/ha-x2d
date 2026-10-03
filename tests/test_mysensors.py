@@ -29,6 +29,7 @@ import unittest
 
 from homeassistant import loader  # first: the package aliases voluptuous before pymysensors imports it
 from homeassistant.components.cover import CoverEntityFeature
+from homeassistant.components.mysensors.const import DOMAIN, MYSENSORS_GATEWAYS
 from homeassistant.config_entries import ConfigEntries
 from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import HomeAssistant
@@ -531,6 +532,11 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
             # Restored from pymysensors' JSON persistence before the dongle says anything.
             self.assertEqual(rig.registry(), before)
             self.assertEqual({slot: state.state for slot, state in rig.covers().items()}, states)
+            # pymysensors saves outside HA's tracked tasks. need_save clears
+            # only after the backup/new-file renames have finished.
+            gateway = rig.hass.data[DOMAIN][MYSENSORS_GATEWAYS][rig.entry.entry_id]
+            await until(lambda: not gateway.tasks.persistence.need_save,
+                        "the reloaded gateway's persistence save")
             persisted = rig.persisted()
             self.assertEqual(sorted(map(int, persisted[str(NODE)]["children"])), list(range(1, 20)))
             self.assertEqual(persisted[str(NODE)]["children"]["3"]["values"],
