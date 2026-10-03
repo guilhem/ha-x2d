@@ -9,6 +9,7 @@
 
 #include <x2d/cc1101.h>
 #include "mysensors.h"
+#include "ota_storage.h"
 #include <x2d/journal.h>
 #include "radio_bus.h"
 #include "radio_tx.h"
@@ -51,10 +52,10 @@ constexpr bool ENROLLMENT_ENABLED = HA_X2D_SUPERVISED_TX;
 
 class BoardFlash final : public x2d::journal::Flash {
  public:
-  static constexpr uintptr_t ADDRESS = 0x101FF000;
+  static constexpr uintptr_t ADDRESS = x2d::ota::JOURNAL_ADDRESS;
   uint32_t size() const override {
-    return reinterpret_cast<uintptr_t>(&_FS_start) == ADDRESS &&
-           reinterpret_cast<uintptr_t>(&_FS_end) >= ADDRESS + x2d::journal::REGION_BYTES
+    return x2d::rp2040::valid_layout() &&
+           ADDRESS + x2d::journal::REGION_BYTES == x2d::ota::STAGING_START
                ? x2d::journal::REGION_BYTES : 0;
   }
   bool read(uint32_t offset, void* out, uint32_t length) override {
@@ -145,14 +146,22 @@ class RadioOutput {
 
 // Runtime and association policy live in the shared controller. Only board
 // entropy and the displayed firmware version belong in this adapter.
+// Referenced as the sketch version so linker GC retains the complete product
+// marker in every OTA-capable image (diagnostic sketches have no such marker).
+#if HA_X2D_SUPERVISED_TX
+const char FIRMWARE_ID[] = "HA-X2D YD-RP2040 OTA/1:0.5.0-trial";
+#else
+const char FIRMWARE_ID[] = "HA-X2D YD-RP2040 OTA/1:0.5.0";
+#endif
 struct Policy {
   uint32_t random_u32() { return rp2040.hwrand32(); }
   const char* firmware() {
-    return HA_X2D_SUPERVISED_TX ? "0.4.1-trial" : "0.4.1";
+    return FIRMWARE_ID + sizeof(x2d::ota::IMAGE_MARKER) - 1;
   }
 } policy;
 
 using Gateway = x2d::mysensors::Gateway<RadioOutput, Policy>;
+x2d::rp2040::OTAStorage ota_storage;
 std::optional<Gateway> gateway;  // identity exists only after boot
 char rx[256];                    // one small USB window; the gateway frames lines
 size_t rx_used = 0, rx_pos = 0;
@@ -188,7 +197,7 @@ void setup() {
   SPI.begin();
   radio.reset();  // CC1101 manual reset; no frequency or transmit registers are set
   radio.configure_transmitter();  // verifies the profile while remaining in IDLE
-  gateway.emplace(journal, radio_output, policy, device_id);
+  gateway.emplace(journal, radio_output, policy, device_id, &ota_storage);
   const x2d::PairingAuthorization trial{
       HA_X2D_SUPERVISED_TX ? uint8_t{1} : uint8_t{0},
       HA_X2D_TRIAL_SUFFIX, HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER};
@@ -220,4 +229,15 @@ void loop() {
   // ACK is queued before the runtime can produce its first terminal event.
   gateway->tick(millis());
   radio_output.service();
+  // Once a boot command is committed, connection loss cannot cancel it. Give
+  // the host up to 3s to acknowledge receipt of ota_staged. An empty gateway
+  // buffer only proves bytes entered USB, not that the host received them.
+  static bool committed = false;
+  static uint32_t committed_at = 0;
+  if (gateway->ota_committed()) {
+    if (!committed) { committed = true; committed_at = millis(); }
+    if (gateway->reboot_requested() || millis() - committed_at >= 3000) {
+      rp2040.reboot();
+    }
+  }
 }

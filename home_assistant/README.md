@@ -7,7 +7,7 @@ or container to install. Only one process may own the USB serial port.
 ## Install
 
 1. Wire the YD-RP2040 and CC1101 as described in the [firmware guide](../firmware/README.md#wiring).
-   Build the **4 MiB journal profile** and run `check_uf2_layout.py` on the exact
+   Build the **4 MiB OTA profile** with `tools/build_firmware.py` and run `check_uf2_layout.py` on the exact
    UF2 you will flash, as described in the [firmware guide](../firmware/README.md).
    Use BOOTSEL to copy that UF2. **Never use flash_nuke, erase the whole flash,
    mount LittleFS over the journal, or change the linker layout.**
@@ -32,9 +32,13 @@ or container to install. Only one process may own the USB serial port.
    add it to dashboards or automations. Keep the `cover.x2d_` entity-ID prefix
    so the customization still matches.
 
-The standard **0.4.1** UF2 enables RF for normal open, close and STOP operations
+The standard **0.5.0** UF2 enables RF for normal open, close and STOP operations
 on paired shutters; no separate commands build is needed. New enrollment still
 requires a supervised trial build. Startup and discovery never transmit RF.
+
+For firmware maintenance, follow the [USB serial update guide](../docs/FIRMWARE_UPDATE.md).
+Stop this integration while the update tool owns the port. The first installation
+of the new layout does not migrate older journals; later OTA updates retain it.
 
 ## Pairing buttons
 

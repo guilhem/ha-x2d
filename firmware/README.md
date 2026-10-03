@@ -16,9 +16,7 @@ Compiler avec le même profil et cache que le diagnostic :
 
 ```sh
 devenv shell
-arduino-cli compile --profile yd-rp2040-4mb-journal \
-  --build-path "$PWD/build/rx-debug/build" --output-dir "$PWD/build/rx-debug" \
-  firmware/rx_debug
+python tools/build_firmware.py rx_debug --output-dir build/rx-debug
 g++ -std=c++17 -Wall -Wextra -Werror \
   -I.devenv/state/arduino/data/internal/ArduinoJson_7.4.3_65bbd090d30b7927/ArduinoJson/src \
   -Ilib/x2d-core/src firmware/check_rx_debug.cpp -o build/rx-debug/check_rx_debug
@@ -170,27 +168,24 @@ devenv test
 devenv tasks run firmware:build
 ```
 
-The standard **0.4.1** firmware is `dist/ha_x2d-0.4.1-yd-rp2040-4mb.uf2`.
+The standard **0.5.0** firmware is `dist/ha_x2d-0.5.0-yd-rp2040-4mb.uf2`.
 It enables open, close and STOP for paired shutters by default and refuses new
 association/confirmation. The radio stays in IDLE until an explicit command;
 boot and USB reconnection transmit nothing. A failed radio configuration still
 refuses emission. No build task flashes hardware; RF qualification remains a
 separate hardware step.
 
-The **yd-rp2040-4mb-journal** profile fixes Arduino-Pico **6.1.1** and the physical
-4 MiB board's linker reservation. Its raw **64 KiB** journal starts at
-**0x101FF000** (`_FS_start`), inside the reserved 2 MiB filesystem region. The
-firmware checks this mapping, never mounts LittleFS and never formats corruption.
-Every firmware update must preserve it. Validate the exact UF2 before copying
-it to the board in BOOTSEL mode:
+The **yd-rp2040-4mb-ota** profile pins Arduino-Pico **6.1.1**. Always use
+`tools/build_firmware.py` (or the devenv tasks), which sets the linker flash limit
+and checks the actual images. The raw **64 KiB** journal is now at
+**0x101EF000**, immediately before the dedicated 2 MiB LittleFS staging region.
+The gateway refuses journal access and updates if the linked reservation is wrong.
+Diagnostic builds use the same reservation but never mount the staging filesystem.
 
-```sh
-python tools/check_uf2_layout.py build/firmware/ha_x2d.ino.uf2
-```
-
-Never use a whole-flash erase tool or a differently partitioned build. A normal
-UF2 update preserves the journal's format, identities and consumed counters.
-The 2 MiB profile is compile-only: storage is incompatible and RF is refused.
+The first installation uses UF2/BOOTSEL and deliberately does not migrate the old
+journal. Subsequent updates can use the `.bin` over MySensors USB, retaining this
+new journal. Follow the [serial update and recovery guide](../docs/FIRMWARE_UPDATE.md).
+Never erase the whole flash when preserving associations and counters.
 
 The shared controller and runtime reserve counters before RF, keep STOP priority,
 maintain storage only at radio idle, and never replay on connection or restart.
@@ -211,7 +206,7 @@ Standard builds have `HA_X2D_SUPERVISED_TX=0`; shutter commands are always enabl
 An explicitly built private trial with `HA_X2D_SUPERVISED_TX=1` requires
 `HA_X2D_TRIAL_SUFFIX`, the locally observed identity suffix. The current RP2040
 trial is restricted to **slot 1** and is not a generally qualified pairing
-profile. Its firmware version remains suffixed `-trial` (`0.4.1-trial`).
+profile. Its firmware version remains suffixed `-trial` (`0.5.0-trial`).
 The shared controller supports 16 slots; that does not authorize new
 RF identities on untested motors.
 
