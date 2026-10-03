@@ -64,7 +64,7 @@ in
     };
 
     "firmware:build" = {
-      description = "Build the unqualified gateway UF2 while protecting its reserved journal";
+      description = "Build the standard gateway UF2 while protecting its reserved journal";
       exec = ''
         cd "${config.devenv.root}"
         arduino-cli compile --profile yd-rp2040-4mb-journal \
@@ -72,21 +72,7 @@ in
         python tools/check_uf2_layout.py build/firmware/ha_x2d.ino.uf2
         mkdir -p dist
         cp build/firmware/ha_x2d.ino.uf2 \
-          dist/ha_x2d-0.4.0-yd-rp2040-4mb-UNQUALIFIED-RADIO.uf2
-      '';
-    };
-
-    "firmware:commands-build" = {
-      description = "Build commands-only firmware for identities already paired in the journal";
-      exec = ''
-        cd "${config.devenv.root}"
-        arduino-cli compile --profile yd-rp2040-4mb-journal \
-          --build-property compiler.cpp.extra_flags=-DHA_X2D_COMMANDS_TX=1 \
-          --output-dir build/commands firmware/ha_x2d
-        python tools/check_uf2_layout.py build/commands/ha_x2d.ino.uf2
-        mkdir -p dist
-        cp build/commands/ha_x2d.ino.uf2 \
-          dist/ha_x2d-0.4.0-yd-rp2040-4mb-COMMANDS-ONLY-UNQUALIFIED-RADIO.uf2
+          dist/ha_x2d-0.4.1-yd-rp2040-4mb.uf2
       '';
     };
 

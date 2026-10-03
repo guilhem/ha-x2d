@@ -8,8 +8,9 @@ and rolling counters. Connect the dongle directly to Home Assistant over USB.
 Home Assistant / MySensors → USB → RP2040 / x2d-core → CC1101 → shutter
 ```
 
-**Experimental radio support.** Default builds cannot transmit. Association
-and motor commands still need qualification with this firmware on real hardware.
+**Experimental radio support.** Standard firmware **0.4.1** enables RF commands
+for paired shutters by default. New enrollment requires a supervised trial build.
+Association and motor commands still need qualification with this firmware on real hardware.
 See [hardware qualification](home_assistant/README.md#hardware-qualification).
 
 ## Connect to Home Assistant
@@ -30,14 +31,18 @@ See [hardware qualification](home_assistant/README.md#hardware-qualification).
          device_class: shutter
    ```
 
-4. Follow the [pairing procedure](home_assistant/README.md#entities-and-pairing)
-   to associate each shutter. Pairing currently requires a supervised trial build.
+4. Create the two native [pairing buttons](home_assistant/README.md#pairing-buttons),
+   attached to the MySensors device, and hide their underlying switches while
+   keeping them enabled. Follow the
+   [pairing procedure](home_assistant/README.md#entities-and-pairing) to associate
+   each shutter. Pairing currently requires a supervised trial build.
 
 Associated shutters appear automatically, up to 16. Their initial entity IDs
 start with `cover.x2d_`; keep that prefix when editing an entity ID. Display
 names can be changed freely. Each cover exposes open, close and STOP, without
-a position slider. MySensors also presents momentary pairing/confirmation
-switches and a read-only diagnostic sensor.
+a position slider. Pairing and confirmation use momentary button helpers,
+editable in the HA UI; MySensors supplies their hidden switch transports and
+a read-only diagnostic sensor.
 
 A completed transmission updates an **assumed** open/closed state. It does not
 prove reception or measure travel. STOP, reboot, USB loss and uncertain radio
@@ -60,9 +65,9 @@ devenv test
 devenv tasks run firmware:build
 ```
 
-The default UF2 has RF disabled. `firmware:commands-build` explicitly enables
-normal shutter commands after pairing, without enabling new enrollment.
-Build tasks never flash a board. Both builds check the protected journal range.
+The default UF2 enables normal shutter RF commands after pairing, without
+enabling new enrollment. No separate commands build is needed. Build tasks
+never flash a board and check the protected journal range.
 
 Software validation targets **HA 2026.9.4**, **pymysensors 0.26.0**, MySensors
 **2.3**, Arduino-Pico **6.1.1**, and the pinned
