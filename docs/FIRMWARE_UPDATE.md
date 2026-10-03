@@ -90,8 +90,8 @@ Integer fields are unsigned 16-bit little-endian words encoded as ASCII hex.
 | 3, block response | same three words plus 16 firmware bytes |
 
 The full binary is padded with `FF` to 16 bytes for transfer. CRC16 MODBUS
-uses polynomial `0xA001`, initial value `0xFFFF` and no final XOR. Only one
-block is outstanding. A missing block is requested every 500 ms, for at most
+uses polynomial `0xA001`, initial value `0xFFFF` and no final XOR. The receiver expects one
+block index at a time; retries can leave duplicate requests in the serial buffers. A missing block is requested every 500 ms, for at most
 five attempts; duplicates of the last accepted block never rewrite storage.
 Invalid or out-of-order replies abort the transfer. Completion is the internal
 log `ota_staged`; the sender then replies with internal `I_REBOOT` (13),

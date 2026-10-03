@@ -24,7 +24,8 @@ class OTAStorage final : public ota::Storage {
     if (bytes <= ota::APPLICATION_OFFSET + 8 || bytes > ota::MAX_BLOCKS * ota::BLOCK_BYTES)
       return false;
     if (!valid_layout()) return false;
-    // Formatting an absent/corrupt staging FS is safe: it contains no identities.
+    // Formatting is confined to staging. Legacy layouts kept their journal
+    // here; its deliberate loss on first use is documented, without migration.
     if (!LittleFS.begin() || !discard()) return false;
     file_ = LittleFS.open("firmware.bin", "w");
     expected_ = bytes;

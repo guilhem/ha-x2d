@@ -7,7 +7,7 @@
 #include "ota.h"
 
 // MySensors 2.x serial API, one USB gateway and one fixed virtual node.
-// No MySensors radio network, state restoration, SmartSleep, heap or JSON.
+// No MySensors radio network, state restoration, SmartSleep or JSON.
 namespace x2d::mysensors {
 
 constexpr uint8_t NODE = 1, PAIR = 17, CONFIRM = 18, DIAGNOSTIC = 19, SYSTEM = 255;
