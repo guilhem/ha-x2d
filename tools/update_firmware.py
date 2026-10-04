@@ -293,7 +293,7 @@ def main(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("serial_path", help="local USB serial path (for example /dev/ttyACM0)")
     parser.add_argument("binary", type=Path, help="whole Arduino-Pico .bin, including bootloader/partition prefix")
-    parser.add_argument("--version", type=int, required=True, help="firmware wire version (0..65535; 0.5.0 uses 5)")
+    parser.add_argument("--version", type=int, required=True, help="firmware wire version (0..65535; 0.6.0 uses 6)")
     parser.add_argument("--device-id", required=True, help="expected board ID: exactly 16 hex digits")
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--discovery-timeout", type=float, default=10)

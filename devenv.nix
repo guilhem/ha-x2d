@@ -70,8 +70,8 @@ in
         python tools/build_firmware.py --output-dir build/firmware
         mkdir -p dist
         cp build/firmware/ha_x2d.ino.uf2 \
-          dist/ha_x2d-0.5.0-yd-rp2040-4mb.uf2
-        cp build/firmware/ha_x2d.ino.bin dist/ha_x2d-0.5.0-yd-rp2040-4mb.bin
+          dist/ha_x2d-0.6.0-rc1-yd-rp2040-4mb.uf2
+        cp build/firmware/ha_x2d.ino.bin dist/ha_x2d-0.6.0-rc1-yd-rp2040-4mb.bin
       '';
     };
 

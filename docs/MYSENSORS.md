@@ -1,79 +1,109 @@
 # MySensors serial adapter
 
-Wire format: `node;child;command;echo;type;payload\n`, 115200 baud, MySensors 2.3.
-ASCII header fields are unsigned bytes; command 0–4, echo 0–1; payload at most
-25 bytes for ordinary messages, or 50 hexadecimal characters for binary streams.
-Input lines are bounded to 95 bytes before LF, CRLF accepted. Invalid
-or oversized input is discarded through the next LF and reported. Output is a
-4096-byte ring; radio service never waits for a reader. Overflow closes command
-admission, cancels pending work and stops active RF at a frame boundary. The
-transport must reopen its connection before more requests can be admitted.
+Wire: `node;child;command;echo;type;payload\n`, **115200 baud**, MySensors **2.3**.
+Headers are unsigned bytes, command 0–4 and echo 0–1. Ordinary payloads are at
+most 25 bytes; stream payloads are at most 50 hexadecimal characters. Input is
+bounded to 95 bytes before LF and accepts CRLF. Malformed input is discarded
+through the next LF. The 4096-byte output ring never blocks radio service.
+An actual overflow closes admission and cancels work at a frame boundary until
+the serial connection reopens.
 
-| Node | Child | Presentation | Values |
+## Devices and children
+
+| Node | Child | Presentation | Meaning |
 | --- | --- | --- | --- |
-| 1 | 1–16 (paired only) | S_COVER (5) | V_STATUS (2), V_UP (29), V_DOWN (30), V_STOP (31) |
-| 1 | 17 / 18 | S_BINARY (3) | V_STATUS (2), momentary pair / confirm |
-| 1 | 19 | S_CUSTOM (23) | V_VAR1 (24), read-only diagnostic |
+| 1 | 17 | S_BINARY (3), V_STATUS (2) | Mode ajout: initial candidate exists |
+| 1 | 19 | S_CUSTOM (23), V_VAR1 (24) | Last readable outcome/refusal |
+| 1 | 20 | S_BINARY (3), V_STATUS (2) | Initialiser: explicit v1 initialization action, returns OFF |
+| 2–254 | 1 | S_COVER (5) | V_STATUS (2), V_UP (29), V_DOWN (30), V_STOP (31) |
+| 2–254 | 2 | S_BINARY (3), V_STATUS (2) | En service |
+| 2–254 | 3 | S_BINARY (3), V_STATUS (2) | Association candidate exists |
+| 2–254 | 4 | S_BINARY (3), V_STATUS (2) | Nouvel essai: bounded retry action, returns OFF |
+| 2–254 | 5 | S_BINARY (3), V_STATUS (2) | Retire: permanent retirement, requires disabled/no candidate |
+| 2–254 | 6 | S_CUSTOM (23), V_VAR1 (24) | Readable shutter lifecycle state |
 
-Node 1 presents as S_ARDUINO_NODE, with sketch name/version. Cover descriptions
-are `X2D <16-digit USB ID> <slot>`. These descriptions establish HA's initial
-`cover.x2d_*` IDs; node/child identifiers stay fixed in the same journal.
+Node 1 is the manager, sketch **X2D USB**. Each logical shutter presents its own
+S_ARDUINO_NODE and sketch **Volet X2D**. Child names include its public node ID;
+the cover name starts **X2D Volet N Commandes**. HA therefore creates separate
+device pages automatically, without button helpers or a dashboard.
 
-The adapter handles gateway version, discovery, presentation and heartbeat
-requests. These and reads never submit RF. It sends no REQ, state-restoration
-request, SmartSleep notification or queued command on reconnect. Only explicit
-SET payload `1` on cover UP/DOWN/STOP or switch STATUS can submit an operation.
-SET `0` is inert. Broadcast actuator SET, percentages, tilt and
-unsupported values cannot reach the radio. Switches always return OFF.
+Nodes are allocated monotonically and never reused in the journal's life.
+There are 16 reusable internal slots and 253 public node identities, including
+abandoned initial additions. Explicit motor replacement keeps the public node
+and children; retirement followed by addition gets a new node. A pending device
+presents controls/state immediately; its cover appears only after confirmation.
 
-For HA's user-facing controls, create two native **Template → Button** helpers,
-each attached to the existing MySensors device with one press action:
-`switch.turn_on` on the child 17 or 18 transport respectively. Hide those native
-switches (`hidden_by: user`) while keeping them enabled (`disabled_by: null`).
-The helpers remain UI-editable, retain their device association after reload,
-and expose momentary buttons without changing this wire protocol. Helper setup
-and reload do not send actuator SET or RF. See the
-[button setup](../home_assistant/README.md#pairing-buttons).
+## Commands and state
 
-The standard firmware **0.5.0** enables RF for paired-shutter commands by default;
-no separate commands build is required. New enrollment remains gated by an
-explicitly authorized supervised trial build.
+SET STATUS on switches accepts exactly `0`/`1`. Initial ADD ON allocates and
+starts a candidate; a repeated ON while it exists cannot start another attempt.
+ADD OFF cancels an initial candidate. Association ON on a paired, disabled device
+opens a replacement; Association OFF cancels its candidate. En service ON confirms
+a candidate after the human has observed the motor response, or reactivates the
+old binding; OFF disables operation. RETRY ON claims the only second attempt.
+RETIRE ON requires disabled service, no candidate and idle radio.
 
-Recognized SET messages requesting an echo receive their exact value with echo
-1, before admission; the echo means receipt, even on refusal. Read requests
-receive SET snapshots (with the requested echo flag). Radio results/refusals
-are separate diagnostic messages. Presentation/internal replies carry no RF
-semantics. Malformed and unsupported commands produce diagnostics, not echoes.
+The initial attempt reserves counters 0/1; the explicit retry requires next=2
+and reserves 2/3. Attempts and counters remain consumed after failure, cancellation
+or restart. A partial reservation can require cancellation. No operation, including
+discovery, reconnect or SET requesting the same state, restores an emission permit.
 
-HA 2026.9.4 accepts S_COVER/V_STATUS as its binary-state fallback. No DIMMER or
-PERCENTAGE value is published, so there is no position feature. STOP stays 1,
-UP/DOWN 0 in snapshots; echoes cannot imply measured motion. V_STATUS becomes 0
-only after a complete close burst; open/unknown use 1. STOP, USB loss, reboot
-and uncertain TX invalidate estimates; `pos_unknown` marks that condition.
-Use HA's global `assumed_state` customization documented by ha-x2d.
+Lifecycle mutations require idle RF. Every queued radio job captures the private
+incarnation of its current/candidate controller. Admission, reservation and terminal
+updates verify that incarnation; slot reuse cannot transfer old queued work.
+Commands delayed by the host until after explicit reactivation carry no radio
+incarnation on the MySensors wire and cannot be distinguished from new commands.
+A replacement candidate retains the disabled primary binding until confirmation.
+Cancellation drops only the candidate; confirmation swaps bindings atomically.
 
-The common controller permits one pending identity, allocates only unused slots,
-requires explicit build authorization, and persists reservations before RF.
-Confirmation requires a reserved attempt, no pending/active radio work and human
-observation. RP2040 presents immediately; ESPHome owns its own restart policy.
-Corrupt flash blocks RF and is never reformatted. The MySensors serial adapter
-still publishes its diagnostic without deleting previously known HA children.
+Recognized commands requesting an echo receive a receipt echo, not a success or
+motor acknowledgement. Authoritative firmware switch values follow refusals as
+well as accepted operations. REQ returns SET snapshots; it never imports cached
+HA actuator states. Unsupported types, percentages, tilt, malformed commands and
+broadcast actuator requests cannot submit RF. No RF identity or counter is exposed
+in diagnostics.
 
-The radio queue holds 16 requests with a 30-second waiting limit, enough for
-a group command at nominal chip timing. Active bursts get their full encoded
-duration plus a one-second watchdog margin; enrollment retains its six-second
-two-phase watchdog. STOP still preempts at a frame boundary. Extremely slow
-calibration or a stalled backend can exhaust the queue's waiting limit and
-report `queue_expired`; expired commands never reserve a counter or transmit.
+## Discovery and timing
 
-MySensors does not carry the journal generation. Never reuse a slot; before a
-full flash reset, explicitly remove HA's corresponding device and persisted
-MySensors node while the integration is stopped. Never restore an old sensor
-inventory against a new journal. HA can retain stale displayed availability
-when USB disappears; the protocol cannot make that a radio guarantee.
-Removing the HA device detaches its button helpers: after a maintenance reset,
-reselect the new device, verify their action targets, and hide the new transport
-switches while keeping them enabled.
+Version, discovery, presentation and heartbeat support the manager, each owned
+logical node and broadcasts. Presentations are incremental, one line per tick;
+space for command/state responses is retained before advancing discovery. Reads
+and presentations do not perform RF or mutate the journal.
 
-Firmware stream messages are handled separately from actuator commands; see the
-[OTA wire contract](FIRMWARE_UPDATE.md#mysensors-wire-contract).
+The queue holds 16 requests with a 30-second waiting limit. STOP preempts movements
+at a full frame boundary. Active bursts retain their watchdog; enrollment uses
+the existing two-phase 24-copy gesture with a six-second active limit. Expired
+waiting jobs do not reserve counters or transmit. USB loss drops queued serial
+bytes and jobs, stops a running burst at a boundary, and keeps reservations.
+
+## Native HA state limits
+
+The cover has no percentage or measured movement. STOP=1 and UP/DOWN=0 precede
+command echoes; V_STATUS=0 follows a completed close burst, while open/unknown
+use 1. STOP, reboot, disconnect or uncertain output invalidates that estimate.
+The shutter state remains explicit about position being unmeasured. Use the
+assumed-state customization in the [HA guide](../home_assistant/README.md).
+
+Native HA creates a battery sensor for each node and may retain available-looking
+cached states after USB loss. The firmware supplies neither a battery measurement
+nor a guarantee of reception. Dashboard cards are optional views of these same
+native entities and have no lifecycle responsibility.
+
+## Initialization and updates
+
+Valid v1 storage requires explicit Initialiser. It commits an empty v2 inventory
+with the old identities as allocation exclusions, then removes old records before
+allowing RF. Bindings/counters are not migrated; motors must be associated again.
+An interrupted initialization resumes finalization without emission. Unknown or
+corrupt storage blocks operations and is never automatically formatted.
+
+A genuinely blank journal initializes its empty inventory at first boot, without
+RF; discovery and reads do not reset storage or create associations.
+
+Clean old HA node/device inventory when making this one-time transition. Later
+v2 updates keep public nodes and counters. Deleting a HA device alone does not
+retire it in firmware; perform Retire first. No protocol-level automatic deletion
+is invented. Restore of an old journal backup is unsupported.
+
+OTA remains on node 1, child 255, C_STREAM, independently of shutter node IDs.
+See the [OTA contract](FIRMWARE_UPDATE.md#mysensors-wire-contract).

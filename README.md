@@ -8,51 +8,35 @@ and rolling counters. Connect the dongle directly to Home Assistant over USB.
 Home Assistant / MySensors → USB → RP2040 / x2d-core → CC1101 → shutter
 ```
 
-**Experimental radio support.** Standard firmware **0.5.0** enables RF commands
-for paired shutters by default. New enrollment requires a supervised trial build.
-Association and motor commands still need qualification with this firmware on real hardware.
-See [hardware qualification](home_assistant/README.md#hardware-qualification).
+**Firmware 0.6.0-rc1:** add, disable, replace and retire shutters through native
+MySensors device pages, without recompiling for each shutter. The public radio
+profile is still a candidate: association and motor commands require physical
+qualification. See [hardware qualification](home_assistant/README.md#hardware-qualification).
 
 ## Connect to Home Assistant
 
-1. Build and flash the journal-protecting UF2 described in the
-   [firmware guide](firmware/README.md).
-2. Add **MySensors** in Settings → Devices & services. Choose **Serial**, the
-   dongle's `/dev/serial/by-id/…` path, **115200 baud** and version **2.3**
-   (the default 1.4 is unsuitable).
-3. Add the following to `configuration.yaml`, merging any existing
-   `homeassistant` section, then reload customizations or restart HA:
+1. Build and flash the checked OTA UF2 in the [firmware guide](firmware/README.md).
+2. Add **MySensors → Serial** using the dongle's `/dev/serial/by-id/…` path,
+   **115200 baud** and protocol **2.3**.
+3. Follow the [installation and lifecycle guide](home_assistant/README.md).
+   If migrating the old journal, initialize once and pair the motors again.
+4. Open the motor's association window and enable **Mode ajout** on the dongle.
+   HA automatically creates the new shutter's device. After observing the motor
+   response, enable **En service** there; its cover appears automatically.
 
-   ```yaml
-   homeassistant:
-     customize_glob:
-       "cover.x2d_*":
-         assumed_state: true
-         device_class: shutter
-   ```
+Each shutter has its own state and association controls. Rename it and assign a
+room in HA. Replacing its motor retains that device and its automations; retiring
+it and adding another creates a fresh device. No helper, custom component or
+dashboard is needed. Any dashboard is an optional way to display the same covers.
 
-4. Create the two native [pairing buttons](home_assistant/README.md#pairing-buttons),
-   attached to the MySensors device, and hide their underlying switches while
-   keeping them enabled. Follow the
-   [pairing procedure](home_assistant/README.md#entities-and-pairing) to associate
-   each shutter. Pairing currently requires a supervised trial build.
+The dongle stores up to **16 registered shutters** and allocates **253 device
+identities** over the journal's life. Internal slots are reusable after retirement;
+public identities and radio counters never rewind. Adding and replacing motors
+uses the same binary throughout the dongle's life.
 
-Associated shutters appear automatically, up to 16. Their initial entity IDs
-start with `cover.x2d_`; keep that prefix when editing an entity ID. Display
-names can be changed freely. Each cover exposes open, close and STOP, without
-a position slider. Pairing and confirmation use momentary button helpers,
-editable in the HA UI; MySensors supplies their hidden switch transports and
-a read-only diagnostic sensor.
-
-A completed transmission updates an **assumed** open/closed state. It does not
-prove reception or measure travel. STOP, reboot, USB loss and uncertain radio
-output invalidate that estimate. Native MySensors displays “open” for unknown
-position by convention; `pos_unknown` in the diagnostic explains this.
-Native HA can retain displayed states after unplugging the dongle: an entity
-that looks available is **not** proof that commands can reach its motor.
-
-See the [installation and pairing guide](home_assistant/README.md) for setup,
-diagnostics and updates.
+There is no measured position or percentage. Read the
+[state and connection guidance](home_assistant/README.md#state-and-connection-loss)
+when interpreting the native cover's assumed state or cached availability.
 
 ## Build and check
 
@@ -65,9 +49,8 @@ devenv test
 devenv tasks run firmware:build
 ```
 
-The default UF2 enables normal shutter RF commands after pairing, without
-enabling new enrollment. No separate commands build is needed. Build tasks
-never flash a board and check the protected journal range.
+The default UF2 includes the complete lifecycle and normal cover commands.
+Build tasks never flash a board and check the protected journal range.
 
 Software validation targets **HA 2026.9.4**, **pymysensors 0.26.0**, MySensors
 **2.3**, Arduino-Pico **6.1.1**, and the pinned
