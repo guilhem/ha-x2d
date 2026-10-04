@@ -33,6 +33,11 @@ constexpr uint8_t PIN_MOSI = 19;
 #endif
 static_assert(HA_X2D_SUPERVISED_TX == 0 || HA_X2D_SUPERVISED_TX == 1,
               "supervised TX must be 0 or 1");
+#ifndef HA_X2D_TRIAL_SLOT
+#define HA_X2D_TRIAL_SLOT 1
+#endif
+static_assert(HA_X2D_TRIAL_SLOT >= 1 && HA_X2D_TRIAL_SLOT <= x2d::MAX_SHUTTERS,
+              "trial slot must be between 1 and MAX_SHUTTERS");
 #if HA_X2D_SUPERVISED_TX && !defined(HA_X2D_TRIAL_SUFFIX)
 #error "Set the private observed identity suffix for this supervised trial"
 #endif
@@ -190,7 +195,7 @@ void setup() {
   radio.configure_transmitter();  // verifies the profile while remaining in IDLE
   gateway.emplace(journal, radio_output, policy, device_id);
   const x2d::PairingAuthorization trial{
-      HA_X2D_SUPERVISED_TX ? uint8_t{1} : uint8_t{0},
+      HA_X2D_SUPERVISED_TX ? uint8_t{HA_X2D_TRIAL_SLOT} : uint8_t{0},
       HA_X2D_TRIAL_SUFFIX, HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER};
   gateway->begin(true, ENROLLMENT_ENABLED,
                  x2d::radio::digital_tx::DEFAULT_CHIP_NS, trial);

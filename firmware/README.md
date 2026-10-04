@@ -209,9 +209,15 @@ requires reopening USB. Keep the USB link awake as described below.
 
 Standard builds have `HA_X2D_SUPERVISED_TX=0`; shutter commands are always enabled.
 An explicitly built private trial with `HA_X2D_SUPERVISED_TX=1` requires
-`HA_X2D_TRIAL_SUFFIX`, the locally observed identity suffix. The current RP2040
-trial is restricted to **slot 1** and is not a generally qualified pairing
-profile. Its firmware version remains suffixed `-trial` (`0.4.1-trial`).
+`HA_X2D_TRIAL_SUFFIX`, the locally observed identity suffix. Set
+`HA_X2D_TRIAL_SLOT` to the intended slot **1–16**; it defaults to **1** and
+authorizes only that slot. For a second shutter after slot 1 is paired, build
+the private trial with `-DHA_X2D_TRIAL_SLOT=2`. This selects the allowed slot;
+the controller still resumes its unique pending association or selects the
+first unused slot. A different selected slot reports `N:pair_unqualified`
+before creating an identity, reserving counters or emitting RF.
+The trial is not a generally qualified pairing profile. Its firmware version
+remains suffixed `-trial` (`0.4.1-trial`).
 The shared controller supports 16 slots; that does not authorize new
 RF identities on untested motors.
 
@@ -223,6 +229,10 @@ requires a fresh ON of MySensors child 17 and emits the existing two-phase
 No motor response means no confirmation. Only human observation authorizes ON
 of child 18, after the radio is idle; the cover then appears without restarting.
 Confirmation can resume after power loss in the same authorized trial build.
+Once that slot is confirmed, another shutter requires a private build authorized
+for its own slot. Earlier paired shutters remain usable with their existing
+identities and counters. Never use an older flash layout when changing trial
+parameters; preserve the layout of the firmware already installed on the board.
 
 See [OBSERVATIONS_RADIO.md](../docs/OBSERVATIONS_RADIO.md) for radio captures.
 Initial association, reset/watchdog carrier-off,

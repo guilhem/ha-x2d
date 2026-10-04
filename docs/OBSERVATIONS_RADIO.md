@@ -417,3 +417,30 @@ La restauration d’une ancienne sauvegarde, les coupures matérielles et
 plusieurs moteurs restent à qualifier.
 La préparation HACS est locale ; publication, installation et mise à jour via
 HACS restent à vérifier. Les preuves personnelles restent dans `build/`.
+
+### Deuxième association via MySensors — 4 octobre 2026
+
+Le firmware privé `0.5.0-trial` branché présente le premier volet associé.
+Un appui sur l'association sélectionne l'emplacement 2 et rapporte
+`2:pair_unqualified` : ce binaire n'autorise que l'emplacement 1. Le contrôleur
+refuse l'opération avant de créer une identité ou de réserver des compteurs.
+
+Un candidat privé conserve la même base et la disposition OTA de `0.5.0`,
+mais autorise uniquement l'emplacement 2 pour un essai initial 0/1. La lecture
+physique vérifie que le programme installé est identique au candidat validé et
+que les 64 Kio du journal sont identiques octet par octet avant et après la
+mise à jour, avant toute nouvelle association. La passerelle redémarre,
+répond au heartbeat, présente encore le premier volet et laisse les deux
+transports d'association OFF. Aucune commande RF n'est envoyée par ces contrôles.
+
+L'utilisateur confirme ensuite que l'association a fonctionné. Sa capture HA
+montre deux entités volet et le diagnostic `2:pos_unknown`. Cela établit une
+deuxième association confirmée dans HA sur ce montage ; la capture ne démontre
+pas un cycle montée/descente/STOP du deuxième moteur. Les identités, suffixes,
+compteurs privés et binaires d'essai restent dans `build/`.
+
+Ce résultat porte sur le candidat privé `0.5.0-trial` avec la sélection de slot
+modifiée, pas sur un flash du firmware standard de cette révision. La sélection
+publique `HA_X2D_TRIAL_SLOT` permet de reproduire la même autorisation bornée
+sans modifier le code du sketch ; elle ne qualifie pas les autres moteurs ou
+l'ensemble des 16 emplacements.
