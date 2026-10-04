@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        profile: [default, trial0, trial2, rx-debug, tx-check]
+        profile: [default, rx-debug, tx-check]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,16 +54,13 @@ jobs:
         env:
           PROFILE: ${{ matrix.profile }}
         run: |
-          cpp_flags=''
           sketch=ha_x2d
           case "$PROFILE" in
-            trial0|trial2)
-              cpp_flags="-DHA_X2D_SUPERVISED_TX=1 -DHA_X2D_TRIAL_SUFFIX=90 -DHA_X2D_TRIAL_EXPECTED_NEXT_COUNTER=${PROFILE#trial}" ;;
             rx-debug) sketch=rx_debug ;;
             tx-check) sketch=tx_check ;;
           esac
-          python tools/build_firmware.py "$sketch" --cpp-flags="$cpp_flags" --output-dir build/firmware
-          # Trial suffix 90 is synthetic; these validation artifacts are not published.
+          python tools/build_firmware.py "$sketch" --output-dir build/firmware
+          # Builds and simulated checks do not qualify the public RF candidate.
 
   esphome:
     runs-on: ubuntu-latest
@@ -75,7 +72,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: guilhem/esphome-x2d
-          ref: f1373d4890437eb2fd3c1db8addc817b2f8bfea7
+          ref: b95ed02c7ad6086fb77460a4893356fbf4378955
           path: build/esphome-x2d
       - uses: actions/setup-python@v5
         with:

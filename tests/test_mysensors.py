@@ -18,6 +18,7 @@ import asyncio
 from collections import Counter, OrderedDict
 import contextlib
 import importlib
+from importlib.metadata import version
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,8 @@ import re
 import socket
 import tempfile
 import tty
+import struct
+import zlib
 import unittest
 
 from homeassistant import loader  # first: the package aliases voluptuous before pymysensors imports it
@@ -46,11 +49,42 @@ except ModuleNotFoundError as error:  # fail loudly: a skip would hide the whole
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = Path(os.environ.get("X2D_MYSENSORS_SERVER", ROOT / "build/native/mysensors_server"))
 
-NODE, PAIR, CONFIRM, DIAGNOSTIC = 1, 17, 18, 19
+NODE, PAIR, DIAGNOSTIC, INITIALIZE = 1, 17, 19, 20
+COVER, SERVICE, ASSOCIATION, RETRY, RETIRE, STATE = 1, 2, 3, 4, 5, 6
 V_STATUS, V_VAR1 = 2, 24
 OPEN, CLOSE, STOP = 0x81, 0x82, 0x04
 SLOTS = range(1, 17)
-CUSTOMIZE = {"customize_glob": {"cover.x2d_*": {"assumed_state": True}}}  # the one accepted YAML rule
+OUTPUTS = ROOT / "build/lifecycle-tests"
+OUTPUTS.mkdir(parents=True, exist_ok=True)
+
+
+def temporary_directory(prefix):
+    return tempfile.TemporaryDirectory(prefix=prefix, dir=OUTPUTS)
+
+
+CUSTOMIZE = {"customize_glob": {"cover.volet_x2d_*": {"assumed_state": True}}}  # the one accepted YAML rule
+
+
+def write_legacy_journal(path, rf_identity):
+    """Independent v1 on-disk fixture: one paired slot and a verified commit.
+
+    No production Journal serializer is used, so reset/exclusion checks cannot
+    pass merely because the fixture accidentally writes the new format.
+    """
+    data = bytearray(b"\xff" * 65536)
+    body = bytearray(b"\xff" * 256)
+    struct.pack_into("<IHHQII", body, 0, 0x4A443258, 1, 16, 0x0123456789ABCDEF, 1, 0)
+    for slot in range(16):
+        struct.pack_into("<IIBBBB", body, 24 + slot * 12,
+                         rf_identity if slot == 0 else 0, 100 if slot == 0 else 0,
+                         2 if slot == 0 else 0, 0, 0, 0)
+    crc = zlib.crc32(body[:252])
+    struct.pack_into("<I", body, 252, crc)
+    commit = bytearray(b"\xff" * 256)
+    struct.pack_into("<III", commit, 0, 0x43443258, 1, crc)
+    struct.pack_into("<I", commit, 12, zlib.crc32(commit[:12]))
+    data[:256], data[256:512] = body, commit
+    path.write_bytes(data)
 
 
 def identity(slot, base=0xA00000):
@@ -258,25 +292,36 @@ class Rig:
         new = event.data["new_state"]
         self.history.append((event.data["entity_id"], new.state if new else None))
 
-    def unique_id(self, child, value_type=V_STATUS):
-        return f"{self.entry.entry_id}-{NODE}-{child}-{value_type}"
+    def unique_id(self, child, value_type=V_STATUS, node=NODE):
+        return f"{self.entry.entry_id}-{node}-{child}-{value_type}"
 
-    def entity_id(self, domain, child, value_type=V_STATUS):
+    def entity_id(self, domain, child, value_type=V_STATUS, node=NODE):
         return entity_registry.async_get(self.hass).async_get_entity_id(
-            domain, "mysensors", self.unique_id(child, value_type))
+            domain, "mysensors", self.unique_id(child, value_type, node))
 
     def cover(self, slot):
-        return self.entity_id("cover", slot)
+        return self.entity_id("cover", COVER, node=slot + 1)
 
     def state(self, slot):
         entity_id = self.cover(slot)
         return self.hass.states.get(entity_id) if entity_id else None
 
     def covers(self):
-        return {slot: self.state(slot) for slot in SLOTS if self.state(slot) is not None}
+        return {slot: self.state(slot) for slot in range(1, 254) if self.state(slot) is not None}
 
-    def switch(self, child):
-        return self.hass.states.get(self.entity_id("switch", child))
+    def switch(self, child, node=NODE):
+        entity_id = self.entity_id("switch", child, node=node)
+        return self.hass.states.get(entity_id) if entity_id else None
+
+    def device(self, node):
+        return device_registry.async_get(self.hass).async_get_device_by_identifier(
+            identifier=("mysensors", f"{self.entry.entry_id}-{node}"),
+            config_entry_id=self.entry.entry_id)
+
+    def node_diagnostic(self, node):
+        entity_id = self.entity_id("sensor", STATE, V_VAR1, node=node)
+        state = self.hass.states.get(entity_id) if entity_id else None
+        return state.state if state else None
 
     def diagnostic(self):
         entity_id = self.entity_id("sensor", DIAGNOSTIC, V_VAR1)
@@ -292,22 +337,27 @@ class Rig:
         await self.hass.services.async_call(
             "cover", service, {"entity_id": self.cover(slot)}, blocking=True)
 
-    async def press(self, child, on=True):
+    async def press(self, child, on=True, node=NODE):
         await self.hass.services.async_call(
-            "switch", "turn_on" if on else "turn_off", {"entity_id": self.entity_id("switch", child)},
+            "switch", "turn_on" if on else "turn_off", {"entity_id": self.entity_id("switch", child, node=node)},
             blocking=True)
 
     async def settled(self, covers=len(SLOTS)):
         await until(lambda: len(self.covers()) == covers and self.diagnostic() is not None
-                    and self.switch(PAIR) is not None and self.switch(CONFIRM) is not None,
-                    f"{covers} covers, both pairing switches and the diagnostic")
+                    and self.switch(PAIR) is not None and self.switch(INITIALIZE) is not None
+                    and self.diagnostic() != "Initialisation en cours"
+                    and all(self.switch(child, slot + 1) is not None
+                            for slot in self.covers() for child in (SERVICE, ASSOCIATION, RETRY, RETIRE))
+                    and all(self.node_diagnostic(slot + 1) is not None for slot in self.covers()),
+                    f"{covers} covers, manager switches and the diagnostic")
         await self.hass.async_block_till_done()
 
-    async def remove_device(self):
+    async def remove_device(self, node):
         """The UI's Delete device: the integration hook, then the registry."""
         await asyncio.sleep(0.3)  # entity updates are debounced; a pending one would find the node gone
         registry = device_registry.async_get(self.hass)
-        device, = device_registry.async_entries_for_config_entry(registry, self.entry.entry_id)
+        device = self.device(node)
+        self.test.assertIsNotNone(device)
         component = importlib.import_module("homeassistant.components.mysensors")
         self.test.assertTrue(await component.async_remove_config_entry_device(self.hass, self.entry, device))
         registry.async_remove_device(device.id)
@@ -320,6 +370,8 @@ class Rig:
 class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
+        if (version("homeassistant"), version("pymysensors")) != ("2026.9.4", "0.26.0"):
+            raise AssertionError("Lifecycle evidence requires Home Assistant 2026.9.4 / pymysensors 0.26.0")
         if not SERVER.is_file() or not os.access(SERVER, os.X_OK):
             raise AssertionError(
                 f"mysensors_server executable missing: {SERVER}. Build the mysensors_server CMake "
@@ -330,7 +382,7 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
         """The real config flow against the PTY, then the host opens the port."""
         dongle = Dongle()
         try:
-            with tempfile.TemporaryDirectory(prefix="ha-x2d-mysensors-") as directory:
+            with temporary_directory(prefix="ha-x2d-mysensors-") as directory:
                 hass = HomeAssistant(directory)
                 hass.config.skip_pip = True
                 hass.config.components.update({"http", "websocket_api"})  # not under test
@@ -359,6 +411,19 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
                     await rig.settled(covers)
                     yield rig
                 finally:
+                    # Keep exact observed serial lines and decoded RF in workspace
+                    # artifacts, including failures; temporary HA files can then go.
+                    evidence = {
+                        "evidence": "native Home Assistant over PTY; flash and RF simulated; no hardware qualification",
+                        "homeassistant": version("homeassistant"),
+                        "pymysensors": version("pymysensors"),
+                        "server_args": list(server_args),
+                        "rf": dongle.rf,
+                        "from_host": dongle.from_host,
+                        "from_dongle": dongle.from_dongle,
+                        "unexpected": dongle.unexpected,
+                    }
+                    (OUTPUTS / f"{self._testMethodName}.json").write_text(json.dumps(evidence, indent=2))
                     for entry in hass.config_entries.async_entries("mysensors"):
                         await hass.config_entries.async_unload(entry.entry_id)
                     await hass.async_stop(force=True)
@@ -378,11 +443,18 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
             entities = entity_registry.async_entries_for_config_entry(
                 entity_registry.async_get(rig.hass), rig.entry.entry_id)
             self.assertEqual(Counter(e.domain for e in entities),
-                             {"cover": 16, "switch": 2, "sensor": 2})  # + diagnostic and node battery
+                             {"cover": 16, "switch": 66, "sensor": 34})  # HA creates its own battery sensor per node
             self.assertEqual(sorted(e.unique_id for e in entities if e.domain == "cover"),
-                             sorted(rig.unique_id(slot) for slot in SLOTS))
+                             sorted(rig.unique_id(COVER, node=slot + 1) for slot in SLOTS))
+            devices = device_registry.async_entries_for_config_entry(
+                device_registry.async_get(rig.hass), rig.entry.entry_id)
+            self.assertEqual(len(devices), 17)
+            cover_devices = set()
             for slot, state in rig.covers().items():
                 with self.subTest(slot=slot):
+                    registered = entity_registry.async_get(rig.hass).async_get(state.entity_id)
+                    self.assertEqual(registered.device_id, rig.device(slot + 1).id)
+                    cover_devices.add(registered.device_id)
                     attributes = state.attributes
                     self.assertEqual(state.state, "open")  # unknown position is shown as the default
                     self.assertEqual(attributes["supported_features"],
@@ -392,11 +464,13 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn("assumed_state", attributes)  # supplied only by the YAML rule
                     self.assertEqual({k: v for k, v in attributes.items() if k.startswith("V_")},
                                      {"V_UP": "off", "V_DOWN": "off", "V_STOP": "on", "V_STATUS": "on"})
-                    self.assertEqual(attributes["node_id"], NODE)
-                    self.assertEqual(attributes["child_id"], slot)
-            self.assertIn("pos_unknown", rig.diagnostic())
+                    self.assertEqual(attributes["node_id"], slot + 1)
+                    self.assertEqual(attributes["child_id"], COVER)
+            self.assertEqual(len(cover_devices), 16)
+            self.assertNotIn(rig.device(NODE).id, cover_devices)
+            self.assertEqual(rig.diagnostic(), "Pret")
             self.assertEqual(rig.switch(PAIR).state, "off")
-            self.assertEqual(rig.switch(CONFIRM).state, "off")
+            self.assertEqual(rig.switch(INITIALIZE).state, "off")
             self.assertEqual(rig.dongle.bursts(), [])  # discovery never reaches the radio
             self.assertIn(f"{NODE};255;0;0;17;2.3.2", rig.dongle.from_dongle)
 
@@ -404,9 +478,9 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
         async with self.system(customize=True) as rig:
             for slot, state in rig.covers().items():
                 with self.subTest(slot=slot):
-                    self.assertTrue(state.entity_id.startswith("cover.x2d_"), state.entity_id)
+                    self.assertTrue(state.entity_id.startswith("cover.volet_x2d_"), state.entity_id)
                     self.assertIs(state.attributes["assumed_state"], True)
-            for child in (PAIR, CONFIRM):
+            for child in (PAIR, INITIALIZE):
                 self.assertNotIn("assumed_state", rig.switch(child).attributes)
 
     async def test_open_close_and_stop_are_acknowledged_and_emit_one_burst_each(self):
@@ -426,19 +500,20 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
                                          (identity(slot), action, first_counter(slot) + number, 25))
                         self.assertEqual(rig.dongle.ends()[base + number], {
                             "kind": "end", "completed": 25, "stopped": False})
-                        ack = f"{NODE};{slot};1;1;{sub};1"  # the request with its ack flag, echoed
+                        ack = f"{slot + 1};1;1;1;{sub};1"  # the request with its ack flag, echoed
                         self.assertIn(ack, rig.dongle.from_host)
                         await until(lambda: ack in rig.dongle.from_dongle, f"the echo {ack}")
-                        diagnostic = f"{NODE};{DIAGNOSTIC};1;0;{V_VAR1};{slot}:"
-                        final = f"{diagnostic}pos_unknown" if action == STOP else f"{diagnostic}emitted"
-                        await until(lambda: final in rig.dongle.from_dongle[mark:], f"the diagnostic {final}")
-                        wire = rig.dongle.from_dongle[mark:]  # receipt first, then the terminal outcome
-                        self.assertLess(wire.index(f"{diagnostic}accepted"), wire.index(final))
+                        if action == CLOSE:
+                            final = f"{slot + 1};1;1;0;2;0"
+                            await until(lambda: final in rig.dongle.from_dongle[mark:],
+                                        "authoritative closed snapshot after completed RF")
+                            wire = rig.dongle.from_dongle[mark:]
+                            self.assertLess(wire.index(ack), wire.index(final))
                         await until(lambda: rig.state(slot).state == resulting, f"{slot} {resulting}")
                         self.assertEqual(rig.state(slot).attributes["V_STOP"], "on")
                         self.assertNotIn("current_position", rig.state(slot).attributes)
                         sent.append(burst["identity"])
-                await until(lambda: rig.diagnostic() == f"{slot}:pos_unknown", "the STOP diagnostic")
+                self.assertEqual(rig.node_diagnostic(slot + 1), "Actif, position inconnue")
             self.assertEqual(set(sent), {identity(16)})
             self.assertEqual({b["identity"] for b in rig.dongle.bursts()}, {identity(3), identity(16)})
             states = {state for entity_id, state in rig.history if entity_id.startswith("cover.")}
@@ -473,31 +548,8 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(first["stopped"] and 1 <= first["completed"] < 25, first)
             self.assertEqual(second, {"kind": "end", "completed": 25, "stopped": False})
             self.assertEqual(stop["counter"], movement["counter"] + 1)
-            await until(lambda: rig.diagnostic() == "5:pos_unknown", "the position diagnostic")
+            await until(lambda: rig.node_diagnostic(6) == "Actif, position inconnue", "the position diagnostic")
             self.assertEqual(rig.state(5).state, "open")
-
-    async def test_momentary_controls_refuse_off_and_return_off_after_reconnect(self):
-        async with self.system() as rig:
-            for child in (PAIR, CONFIRM):
-                with self.subTest(child=child):
-                    await rig.press(child, on=True)  # association is not authorized in this build
-                    await until(lambda: rig.diagnostic() == "association_disabled", "the refusal")
-                    await until(lambda: rig.switch(child).state == "off", "the momentary return to off")
-                    await rig.press(child, on=False)
-                    await asyncio.sleep(0.2)
-                    self.assertEqual(rig.switch(child).state, "off")
-            self.assertEqual(rig.dongle.bursts(), [])
-            await rig.dongle.disconnect()
-            await rig.press(PAIR, on=True)  # lost with the link: the server was not listening
-            await asyncio.sleep(0.2)
-            await rig.dongle.connect()
-            await until(lambda: rig.dongle.from_dongle.count("0;255;3;0;14;Gateway startup complete.") == 2,
-                        "the second gateway-ready")
-            await rig.hass.async_block_till_done()
-            await asyncio.sleep(0.3)
-            self.assertEqual({rig.switch(PAIR).state, rig.switch(CONFIRM).state}, {"off"})
-            self.assertEqual(len(rig.covers()), 16)
-            self.assertEqual(rig.dongle.bursts(), [])
 
     async def test_link_loss_cancels_motion_and_nothing_is_replayed(self):
         async with self.system() as rig:
@@ -510,22 +562,23 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
             cut = rig.dongle.ends()[0]
             self.assertTrue(cut["stopped"] and 1 <= cut["completed"] < 25, cut)  # whole frames only
             await rig.command("close_cover", 6)  # written to a port nobody is reading
-            line = f"{NODE};6;1;1;30;1"
+            line = "7;1;1;1;30;1"
             await until(lambda: line in rig.dongle.from_host, "the lost command on the wire")
             await asyncio.sleep(0.3)
             await rig.dongle.connect()
-            await until(lambda: rig.dongle.from_dongle.count(f"{NODE};255;0;0;17;2.3.2") == 2, "re-announce")
+            await until(lambda: rig.dongle.from_dongle.count(
+                "0;255;3;0;14;Gateway startup complete.") == 2, "re-announce")
             await rig.hass.async_block_till_done()
             await asyncio.sleep(0.5)
             self.assertEqual(len(rig.dongle.bursts()), 1)  # no replay of either command
             self.assertEqual({rig.state(4).state, rig.state(6).state}, {"open"})
-            self.assertEqual(rig.diagnostic(), "4:usb_lost,pos_unknown")  # the cut movement
+            self.assertIn("Interrompu", rig.diagnostic())  # the cut movement
 
     async def test_reload_keeps_every_entity_identity_and_does_not_transmit(self):
         async with self.system() as rig:
             before = rig.registry()
             states = {slot: state.state for slot, state in rig.covers().items()}
-            self.assertEqual(len(before), 20)
+            self.assertEqual(len(before), 116)
             await rig.dongle.disconnect()
             await rig.hass.config_entries.async_reload(rig.entry.entry_id)
             await rig.hass.async_block_till_done()
@@ -538,8 +591,10 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
             await until(lambda: not gateway.tasks.persistence.need_save,
                         "the reloaded gateway's persistence save")
             persisted = rig.persisted()
-            self.assertEqual(sorted(map(int, persisted[str(NODE)]["children"])), list(range(1, 20)))
-            self.assertEqual(persisted[str(NODE)]["children"]["3"]["values"],
+            self.assertEqual(sorted(map(int, persisted)), list(range(1, 18)))
+            self.assertEqual(sorted(map(int, persisted[str(NODE)]["children"])), [17, 19, 20])
+            self.assertEqual(sorted(map(int, persisted["4"]["children"])), list(range(1, 7)))
+            self.assertEqual(persisted["4"]["children"]["1"]["values"],
                              {"29": "0", "30": "0", "31": "1", "2": "1"})
             await rig.dongle.connect()
             await until(lambda: rig.dongle.from_dongle.count("0;255;3;0;14;Gateway startup complete.") == 2,
@@ -560,7 +615,7 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(rig.dongle.bursts(), [])
 
     async def test_journal_counters_survive_a_server_restart(self):
-        with tempfile.TemporaryDirectory(prefix="x2d-journal-") as directory:
+        with temporary_directory(prefix="x2d-journal-") as directory:
             args = (f"--journal={Path(directory) / 'journal.bin'}",)
             async with self.system(*args) as rig:
                 await rig.command("open_cover", 2)
@@ -577,52 +632,12 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((first["identity"], second["identity"]), (identity(2),) * 2)
                 await until(lambda: rig.state(2).state == "closed", "the close")
 
-    async def test_native_mysensors_cannot_tell_that_the_journal_was_wiped(self):
-        """Documented limitation, not a protection: no MySensors field carries a generation.
-
-        Wiping the dongle's journal without cleaning Home Assistant first leaves
-        its stored node, children and entity ids in place, and an old entity drives
-        whichever shutter now occupies its slot. Nothing detects or fences this;
-        the only supported order is test_cleanup_precedes_a_journal_wipe.
-        """
-        with tempfile.TemporaryDirectory(prefix="x2d-journal-") as directory:
-            old, new = (str(Path(directory) / name) for name in ("old.bin", "new.bin"))
-            async with self.system(f"--journal={old}") as rig:
-                before = rig.registry()
-                await rig.dongle.restart(f"--journal={new}", "--generation=FEDCBA9876543210",
-                                         "--identity-base=B00000")
-                self.assertEqual(rig.dongle.ready[-1], (16, "FEDCBA9876543210"))
-                await until(lambda: rig.dongle.from_dongle.count("0;255;3;0;14;Gateway startup complete.") == 2,
-                            "the new gateway-ready")
-                await rig.hass.async_block_till_done()
-                self.assertEqual(rig.registry(), before)  # Home Assistant saw nothing change
-                self.assertFalse([line for line in rig.dongle.from_dongle if "FEDCBA9876543210" in line])
-                await rig.command("open_cover", 3)
-                await self.burst_done(rig, 1)
-                self.assertEqual(rig.dongle.bursts()[0]["identity"], identity(3, 0xB00000))
-
-    async def test_cleanup_precedes_a_journal_wipe(self):
-        """The supported order: delete the device in Home Assistant, then reset the dongle."""
-        with tempfile.TemporaryDirectory(prefix="x2d-journal-") as directory:
-            old, new = (str(Path(directory) / name) for name in ("old.bin", "new.bin"))
-            async with self.system(f"--journal={old}") as rig:
-                before = rig.registry()
-                await rig.remove_device()
-                self.assertEqual(rig.registry(), {})
-                await rig.dongle.restart(f"--journal={new}", "--generation=FEDCBA9876543210",
-                                         "--identity-base=B00000")
-                await rig.settled()  # everything is announced and discovered as new
-                self.assertEqual(set(rig.registry().values()), set(before.values()))
-                await rig.command("open_cover", 3)
-                await self.burst_done(rig, 1)
-                burst = rig.dongle.bursts()[0]
-                self.assertEqual((burst["identity"], burst["counter"]), (identity(3, 0xB00000), first_counter(3)))
 
     async def test_disabled_or_faulty_radio_never_claims_a_position(self):
         async with self.system() as rig:
-            for server_args, outcome in ((("--no-tx",), "3:tx_off,pos_unknown"),
-                                         (("--fault=start",), "3:radio_start_failed"),
-                                         (("--fault=poll",), "3:rf_fault,pos_unknown")):
+            for server_args, outcome in ((("--no-tx",), "V4: Emission desactivee"),
+                                         (("--fault=start",), "V4: Operation refusee"),
+                                         (("--fault=poll",), "V4: Erreur radio")):
                 with self.subTest(server_args=server_args):
                     known = len(rig.dongle.bursts())
                     await rig.dongle.restart(*server_args)
@@ -634,85 +649,340 @@ class NativeMySensorsChecks(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(rig.state(3).state, "open")  # never closed without a verified emission
                     self.assertEqual(len(rig.dongle.bursts()) - known, 1 if "poll" in server_args[0] else 0)
 
-    async def test_pairing_switches_drive_association_and_the_new_cover_appears_once_confirmed(self):
-        async with self.system("--paired=0", "--enrollment", "--authorize=1:5A:0", covers=0) as rig:
+
+
+    async def candidate(self, rig, node=2):
+        """Explicit manager action; enrollment is observed only in simulated RF."""
+        before = len(rig.dongle.ends())
+        await rig.press(PAIR)
+        await until(lambda: rig.switch(SERVICE, node) is not None
+                    and rig.switch(ASSOCIATION, node) is not None,
+                    f"native controls for candidate node {node}")
+        await self.burst_done(rig, before + 2)
+        await until(lambda: rig.node_diagnostic(node) == "Mouvement a confirmer",
+                    f"node {node} awaiting human confirmation")
+        self.assertEqual(rig.switch(PAIR).state, "on")
+        self.assertEqual(rig.switch(SERVICE, node).state, "off")
+        self.assertEqual(rig.switch(ASSOCIATION, node).state, "on")
+
+    async def confirm(self, rig, node=2):
+        await rig.press(SERVICE, node=node)
+        await until(lambda: rig.state(node - 1) is not None
+                    and rig.switch(SERVICE, node).state == "on",
+                    f"node {node} confirmed and cover automatically discovered")
+        await until(lambda: rig.switch(PAIR).state == "off"
+                    and rig.switch(ASSOCIATION, node).state == "off",
+                    "authoritative lifecycle controls after confirmation")
+        await rig.hass.async_block_till_done()
+
+
+    async def test_broadcast_actuator_sets_never_allocate_devices_or_emit_rf(self):
+        async with self.system("--paired=0", "--enrollment", covers=0) as rig:
+            before = rig.registry()
+            # Injection is at the host PTY endpoint. The bridge fragments and
+            # forwards these bytes unchanged, through the real Gateway framer.
+            commands = "".join(f"{node};{child};1;1;{value_type};1\n"
+                               for node in (0, 255)
+                               for child, value_type in ((PAIR, V_STATUS), (COVER, 29),
+                                                         (SERVICE, V_STATUS), (ASSOCIATION, V_STATUS)))
+            os.write(rig.dongle.slave, commands.encode())
+            await until(lambda: all(line in rig.dongle.from_host
+                                    for line in commands.splitlines()), "broadcast SET bytes forwarded")
+            await asyncio.sleep(0.4)
+            self.assertEqual(rig.registry(), before)
             self.assertEqual(rig.covers(), {})
-            await rig.press(PAIR)
-            await self.burst_done(rig, 2)  # the two enrollment bursts, about two seconds apart
-            await until(lambda: rig.diagnostic() == "1:awaiting_confirmation", "the awaiting diagnostic")
-            await until(lambda: rig.switch(PAIR).state == "off", "the momentary return to off")
-            self.assertEqual(rig.covers(), {})  # nothing is a shutter until a human confirms
-            await rig.press(CONFIRM)
-            await until(lambda: len(rig.covers()) == 1, "the confirmed cover")
-            await until(lambda: rig.diagnostic() == "1:paired,pos_unknown", "the paired diagnostic")
-            self.assertEqual(rig.state(1).state, "open")
+            self.assertEqual(rig.dongle.bursts(), [])
+            self.assertEqual(rig.switch(PAIR).state, "off")
+
+    async def test_fresh_manager_add_discovers_per_device_controls_then_confirmation_cover(self):
+        async with self.system("--paired=0", "--enrollment", covers=0) as rig:
+            await asyncio.sleep(0.2)
+            self.assertEqual(rig.dongle.bursts(), [])
+            self.assertIsNotNone(rig.device(NODE))
+            await self.candidate(rig)
+            self.assertEqual(rig.covers(), {})
+            candidate = rig.device(2)
+            self.assertIsNotNone(candidate)
+            self.assertNotEqual(candidate.id, rig.device(NODE).id)
+            candidate_entities = entity_registry.async_entries_for_device(
+                entity_registry.async_get(rig.hass), candidate.id)
+            self.assertEqual(Counter(e.domain for e in candidate_entities), {"switch": 4, "sensor": 2})
+            self.assertEqual([b["counter"] for b in rig.dongle.bursts()], [0, 1])
+            self.assertEqual({b["copies"] for b in rig.dongle.bursts()}, {24})
+            self.assertEqual([b["action"] for b in rig.dongle.bursts()], [0x02, 0x20])
+            rf_id = rig.dongle.bursts()[0]["identity"]
+            self.assertEqual(rf_id & 0xFF, 1)  # public, hardware-unqualified candidate suffix
+            self.assertEqual({b["identity"] for b in rig.dongle.bursts()}, {rf_id})
+            await self.confirm(rig)
+            cover = entity_registry.async_get(rig.hass).async_get(rig.cover(1))
+            self.assertEqual((cover.unique_id, cover.device_id), (rig.unique_id(COVER, node=2), candidate.id))
+            self.assertEqual(rig.state(1).attributes["child_id"], COVER)
+            self.assertNotIn("current_position", rig.state(1).attributes)
             await rig.command("open_cover", 1)
             await self.burst_done(rig, 3)
-            command = rig.dongle.bursts()[2]
-            self.assertEqual((command["action"], command["counter"], command["identity"] & 0xFF),
-                             (OPEN, 2, 0x5A))  # the enrollment reserved counters 0 and 1
+            self.assertEqual((rig.dongle.bursts()[-1]["identity"], rig.dongle.bursts()[-1]["counter"]),
+                             (rf_id, 2))
+            # Firmware never invents battery measurements or percentages.
+            self.assertFalse([line for line in rig.dongle.from_dongle
+                              if (line.split(";")[2:5] == ["3", "0", "0"]
+                                  or line.split(";")[2:5] == ["1", "0", "3"])])
 
-    async def test_native_pairing_buttons_keep_hidden_transports_enabled_and_survive_reload(self):
-        async with self.system("--paired=0", "--enrollment", "--authorize=1:5A:0", covers=0) as rig:
-            registry = entity_registry.async_get(rig.hass)
-            device, = device_registry.async_entries_for_config_entry(
-                device_registry.async_get(rig.hass), rig.entry.entry_id)
-            buttons = {}
-            for child, name in ((PAIR, "X2D Pair shutter"), (CONFIRM, "X2D Confirm pairing")):
-                transport = rig.entity_id("switch", child)
-                registry.async_update_entity(transport, hidden_by=entity_registry.RegistryEntryHider.USER)
-                manager = rig.hass.config_entries.flow
-                flow = await manager.async_init("template", context={"source": "user"})
-                flow = await manager.async_configure(flow["flow_id"], {"next_step_id": "button"})
-                flow = await manager.async_configure(flow["flow_id"], {
-                    "name": name, "device_id": device.id,
-                    "press": [{"action": "switch.turn_on", "target": {"entity_id": transport}}]})
-                self.assertEqual(flow["type"], "create_entry", flow)
-                entry = flow["result"]
-                await rig.hass.async_block_till_done()  # actions are validated during entity setup
-                button, = entity_registry.async_entries_for_config_entry(registry, entry.entry_id)
-                self.assertEqual(button.domain, "button")
-                self.assertEqual(button.device_id, device.id)
-                self.assertIsNotNone(rig.hass.states.get(button.entity_id))
-                buttons[child] = (entry, button)
-            self.assertEqual(rig.dongle.bursts(), [])
+    async def test_decline_and_double_click_consume_one_candidate_and_never_reuse_node(self):
+        async with self.system("--paired=0", "--enrollment", covers=0) as rig:
+            await self.candidate(rig)
+            before = len(rig.dongle.from_dongle)
+            await rig.press(PAIR)  # duplicate ON after the RF attempt is also idempotent
+            await asyncio.sleep(0.3)
+            self.assertEqual(len(rig.dongle.bursts()), 2)
+            self.assertFalse(any(line.startswith("3;") for line in rig.dongle.from_dongle[before:]))
+            await rig.press(ASSOCIATION, on=False, node=2)
+            await until(lambda: rig.switch(PAIR).state == "off"
+                        and rig.switch(ASSOCIATION, 2).state == "off", "declined candidate")
+            self.assertEqual(rig.covers(), {})
+            await self.candidate(rig, node=3)
+            await self.confirm(rig, node=3)
+            self.assertIsNone(rig.state(1))
+            self.assertIsNotNone(rig.state(2))
+            first, _, new, _ = rig.dongle.bursts()
+            self.assertNotEqual(first["identity"], new["identity"])
+            self.assertEqual(new["counter"], 0)
 
-            for paired in (False, True):
-                for child, (entry, button) in buttons.items():
-                    options = dict(entry.options)
-                    self.assertTrue(await rig.hass.config_entries.async_reload(entry.entry_id))
-                    await rig.hass.async_block_till_done()
-                    restored = registry.async_get(button.entity_id)
-                    self.assertEqual((restored.id, restored.unique_id, restored.device_id),
-                                     (button.id, button.unique_id, device.id))
-                    self.assertEqual(entry.options, options)
-                    self.assertEqual(entry.options["device_id"], device.id)
-                    self.assertIsNotNone(rig.hass.states.get(button.entity_id))
-                    transport = registry.async_get(rig.entity_id("switch", child))
-                    self.assertEqual(transport.hidden_by, entity_registry.RegistryEntryHider.USER)
-                    self.assertIsNone(transport.disabled_by)
-                    self.assertEqual(rig.switch(child).state, "off")
-                await asyncio.sleep(0.3)  # observe any serial work triggered by setup/reload
-                self.assertEqual(len(rig.dongle.bursts()), 2 if paired else 0)
-                for child in buttons:
-                    command = f"{NODE};{child};1;1;{V_STATUS};1"
-                    self.assertEqual(rig.dongle.from_host.count(command), int(paired))
-                if paired:
-                    continue
+    async def test_retry_is_explicit_single_and_returns_authoritative_off(self):
+        async with self.system("--paired=0", "--enrollment", covers=0) as rig:
+            await self.candidate(rig)
+            await rig.press(RETRY, node=2)
+            await self.burst_done(rig, 4)
+            await until(lambda: rig.node_diagnostic(2) == "Mouvement a confirmer"
+                        and rig.switch(RETRY, 2).state == "off", "retry completed")
+            self.assertEqual([b["counter"] for b in rig.dongle.bursts()], [0, 1, 2, 3])
+            self.assertEqual(len({b["identity"] for b in rig.dongle.bursts()}), 1)
+            mark = len(rig.dongle.from_dongle)
+            await rig.press(RETRY, node=2)
+            await until(lambda: rig.node_diagnostic(2) == "Essais epuises: annuler",
+                        "retry-limit refusal on the shutter device")
+            self.assertTrue(any("Essais epuises" in line
+                                for line in rig.dongle.from_dongle[mark:]))
+            self.assertEqual(rig.switch(SERVICE, 2).state, "off")
+            self.assertEqual(rig.switch(ASSOCIATION, 2).state, "on")
+            await until(lambda: rig.switch(RETRY, 2).state == "off", "rejected action reset")
+            await asyncio.sleep(0.3)
+            self.assertEqual(len(rig.dongle.bursts()), 4)
+            await self.confirm(rig)
+            await rig.command("close_cover", 1)
+            await self.burst_done(rig, 5)
+            self.assertEqual(rig.dongle.bursts()[-1]["counter"], 4)
 
-                await rig.hass.services.async_call(
-                    "button", "press", {"entity_id": buttons[PAIR][1].entity_id}, blocking=True)
-                await self.burst_done(rig, 2)  # one transport command, two enrollment phases
-                await until(lambda: rig.diagnostic() == "1:awaiting_confirmation", "the awaiting diagnostic")
-                await until(lambda: rig.switch(PAIR).state == "off", "the pairing transport reset")
+    async def test_retire_then_slot_reuse_discovers_new_device_and_fences_old_ha_commands(self):
+        async with self.system("--paired=1", "--enrollment", covers=1) as rig:
+            old_device = rig.device(2)
+            old_cover = rig.cover(1)
+            old_uid = entity_registry.async_get(rig.hass).async_get(old_cover).unique_id
+            mark = len(rig.dongle.from_dongle)
+            await rig.press(RETIRE, node=2)  # enabled shutters cannot be retired
+            await until(lambda: rig.node_diagnostic(2) == "Desactiver le volet",
+                        "enabled retirement refusal on the shutter device")
+            self.assertTrue(any("Desactiver" in line for line in rig.dongle.from_dongle[mark:]))
+            self.assertEqual(rig.switch(SERVICE, 2).state, "on")
+            await until(lambda: rig.switch(RETIRE, 2).state == "off", "retire refusal reset")
+            await rig.press(SERVICE, on=False, node=2)
+            await until(lambda: rig.switch(SERVICE, 2).state == "off", "disabled old shutter")
+            await rig.press(RETIRE, node=2)
+            await until(lambda: rig.node_diagnostic(2) == "Retire", "retired snapshot")
+            await self.candidate(rig, node=3)
+            await self.confirm(rig, node=3)
+            self.assertNotEqual(rig.device(3).id, old_device.id)
+            self.assertNotEqual(rig.cover(2), old_cover)
+            self.assertNotEqual(entity_registry.async_get(rig.hass).async_get(rig.cover(2)).unique_id, old_uid)
+            self.assertEqual(rig.cover(1), old_cover)  # stock HA keeps the retired device
+            rf_before = len(rig.dongle.bursts())
+            for service in ("open_cover", "close_cover", "stop_cover"):
+                await rig.command(service, 1)
+            for child in (SERVICE, ASSOCIATION, RETRY, RETIRE):
+                await rig.press(child, node=2)
+            await asyncio.sleep(0.5)
+            self.assertEqual(len(rig.dongle.bursts()), rf_before)
+            self.assertEqual(rig.switch(SERVICE, 2).state, "off")
+            self.assertEqual(rig.switch(ASSOCIATION, 2).state, "off")
+            self.assertEqual(rig.node_diagnostic(2), "Retire")
+            await rig.command("close_cover", 2)
+            await self.burst_done(rig, rf_before + 1)
+            self.assertEqual(rig.dongle.bursts()[-1]["counter"], 2)
+            self.assertNotEqual(rig.dongle.bursts()[-1]["identity"], identity(1))
+
+    async def test_replacement_preserves_device_entity_ids_and_changes_rf_epoch(self):
+        async with self.system("--paired=1", "--enrollment", covers=1) as rig:
+            before = rig.registry()
+            device_id = rig.device(2).id
+            await rig.press(SERVICE, on=False, node=2)
+            await until(lambda: rig.switch(SERVICE, 2).state == "off", "old RF disabled")
+            await rig.press(ASSOCIATION, node=2)
+            await self.burst_done(rig, 2)
+            await until(lambda: rig.node_diagnostic(2) == "Mouvement a confirmer", "replacement pending")
+            new_rf = rig.dongle.bursts()[0]["identity"]
+            self.assertNotEqual(new_rf, identity(1))
+            await rig.command("open_cover", 1)  # a cover already exists but must remain inhibited
+            await asyncio.sleep(0.3)
+            self.assertEqual(len(rig.dongle.bursts()), 2)
+            await self.confirm(rig)
+            self.assertEqual(rig.registry(), before)
+            self.assertEqual(rig.device(2).id, device_id)
+            await rig.command("close_cover", 1)
+            await self.burst_done(rig, 3)
+            self.assertEqual((rig.dongle.bursts()[-1]["identity"], rig.dongle.bursts()[-1]["counter"]),
+                             (new_rf, 2))
+
+    async def test_cancel_replacement_preserves_old_identity_but_keeps_it_disabled(self):
+        async with self.system("--paired=1", "--enrollment", covers=1) as rig:
+            before = rig.registry()
+            await rig.press(SERVICE, on=False, node=2)
+            await until(lambda: rig.switch(SERVICE, 2).state == "off", "disabled shutter")
+            await rig.press(ASSOCIATION, node=2)
+            await self.burst_done(rig, 2)
+            await until(lambda: rig.node_diagnostic(2) == "Mouvement a confirmer", "replacement pending")
+            await rig.press(ASSOCIATION, on=False, node=2)
+            await until(lambda: rig.switch(ASSOCIATION, 2).state == "off", "replacement cancelled")
+            self.assertEqual(rig.switch(SERVICE, 2).state, "off")
+            self.assertEqual(rig.registry(), before)
+            await rig.command("close_cover", 1)
+            await asyncio.sleep(0.3)
+            self.assertEqual(len(rig.dongle.bursts()), 2)
+            await rig.press(SERVICE, node=2)  # only explicit reactivation authorizes the old RF again
+            await until(lambda: rig.switch(SERVICE, 2).state == "on", "explicit old RF reactivation")
+            await rig.command("close_cover", 1)
+            await self.burst_done(rig, 3)
+            self.assertEqual((rig.dongle.bursts()[-1]["identity"], rig.dongle.bursts()[-1]["counter"]),
+                             (identity(1), first_counter(1)))
+
+    async def test_pending_association_restart_never_replays_and_native_devices_persist(self):
+        with temporary_directory(prefix="x2d-lifecycle-journal-") as directory:
+            args = ("--paired=0", "--enrollment", f"--journal={Path(directory) / 'journal.bin'}")
+            async with self.system(*args, covers=0) as rig:
+                await self.candidate(rig)
+                before = rig.registry()
+                devices = {n: rig.device(n).id for n in (NODE, 2)}
+                await rig.dongle.restart(*args)
+                await until(lambda: rig.dongle.from_dongle.count(
+                    "0;255;3;0;14;Gateway startup complete.") == 2, "restarted gateway")
+                await asyncio.sleep(0.4)
+                self.assertEqual(len(rig.dongle.bursts()), 2)
+                self.assertEqual(rig.registry(), before)
+                self.assertEqual({n: rig.device(n).id for n in devices}, devices)
+                await self.confirm(rig)
+                await rig.dongle.disconnect()
+                before = rig.registry()
+                await rig.hass.config_entries.async_reload(rig.entry.entry_id)
+                await rig.hass.async_block_till_done()
+                self.assertEqual(rig.registry(), before)
+                self.assertEqual({n: rig.device(n).id for n in devices}, devices)
+                gateway = rig.hass.data[DOMAIN][MYSENSORS_GATEWAYS][rig.entry.entry_id]
+                await until(lambda: not gateway.tasks.persistence.need_save, "native persisted nodes")
+                self.assertEqual(sorted(map(int, rig.persisted())), [1, 2])
+                self.assertEqual(rig.persisted()["2"]["children"]["1"]["values"],
+                                 {"29": "0", "30": "0", "31": "1", "2": "1"})
+                await rig.dongle.connect()
+                await asyncio.sleep(0.4)
+                self.assertEqual(len(rig.dongle.bursts()), 2)
+
+
+    async def test_power_cut_during_first_enrollment_never_replays_the_second_phase(self):
+        with temporary_directory(prefix="x2d-enrollment-power-cut-") as directory:
+            args = ("--paired=0", "--enrollment", f"--journal={Path(directory) / 'journal.bin'}")
+            async with self.system(*args, covers=0) as rig:
+                await rig.dongle.hold()
+                await rig.press(PAIR)
+                await until(lambda: len(rig.dongle.bursts()) == 1, "first enrollment phase started")
+                await until(lambda: rig.switch(ASSOCIATION, 2) is not None, "candidate native device")
+                device_id = rig.device(2).id
+                await rig.dongle.restart(*args)  # abrupt exit with phase two still outstanding
+                await until(lambda: rig.dongle.from_dongle.count(
+                    "0;255;3;0;14;Gateway startup complete.") == 2, "power-cut restart")
+                await asyncio.sleep(0.4)
+                self.assertEqual(len(rig.dongle.bursts()), 1)
+                self.assertEqual(rig.dongle.ends(), [])
+                self.assertEqual(rig.device(2).id, device_id)
                 self.assertEqual(rig.covers(), {})
-                await rig.hass.services.async_call(
-                    "button", "press", {"entity_id": buttons[CONFIRM][1].entity_id}, blocking=True)
-                await until(lambda: len(rig.covers()) == 1, "the confirmed cover")
-                await until(lambda: rig.diagnostic() == "1:paired,pos_unknown", "the paired diagnostic")
-                await until(lambda: rig.switch(CONFIRM).state == "off", "the confirmation transport reset")
-                for entry, button in buttons.values():
-                    self.assertNotIn(rig.hass.states.get(button.entity_id).state, {"on", "off"})
+                # Only an explicit user choice can start the next attempt.
+                await rig.press(RETRY, node=2)
+                await self.burst_done(rig, 2)
+                self.assertEqual([b["counter"] for b in rig.dongle.bursts()], [0, 2, 3])
+                self.assertEqual(len({b["identity"] for b in rig.dongle.bursts()}), 1)
+
+    async def test_disabled_enrollment_restores_manager_state_without_rf(self):
+        async with self.system("--paired=0", covers=0) as rig:
+            mark = len(rig.dongle.from_dongle)
+            await rig.press(PAIR)
+            await until(lambda: any("Association indisponible" in line
+                                   for line in rig.dongle.from_dongle[mark:]), "enrollment refusal")
+            await until(lambda: rig.switch(PAIR).state == "off", "authoritative manager OFF")
+            await rig.press(INITIALIZE)  # an initialized journal is not reset a second time
+            await until(lambda: rig.diagnostic() == "Deja initialise", "repeat initialization refusal")
+            self.assertEqual(rig.dongle.bursts(), [])
+            self.assertEqual(rig.covers(), {})
+
+    async def test_legacy_initialize_and_recovery_never_emit_or_restore_old_endpoints(self):
+        with temporary_directory(prefix="x2d-legacy-") as directory:
+            path = Path(directory) / "legacy.bin"
+            legacy_id = 0xBEEF01
+            write_legacy_journal(path, legacy_id)
+            args = ("--paired=0", "--enrollment", f"--journal={path}")
+            async with self.system(*args, covers=0) as rig:
+                self.assertIn("Initialisation", rig.diagnostic())
+                self.assertEqual(rig.dongle.bursts(), [])
+                await rig.press(INITIALIZE)
+                await until(lambda: rig.diagnostic() == "Pret"
+                            and rig.switch(INITIALIZE).state == "off", "legacy reset completed")
+                self.assertEqual(rig.dongle.bursts(), [])
+                await rig.dongle.restart(*args)
+                await until(lambda: rig.dongle.from_dongle.count(
+                    "0;255;3;0;14;Gateway startup complete.") == 2, "recovered reset")
+                await asyncio.sleep(0.3)
+                self.assertEqual(rig.dongle.bursts(), [])
+                self.assertEqual(rig.covers(), {})
+                await self.candidate(rig)
+                self.assertNotIn(legacy_id, {b["identity"] for b in rig.dongle.bursts()})
+
+    async def test_power_cut_during_legacy_reset_recovers_without_rf_or_identity_reuse(self):
+        with temporary_directory(prefix="x2d-reset-recovery-") as directory:
+            path = Path(directory) / "journal.bin"
+            legacy_id = 0xA00001  # first allocator draw: recovery must retain its exclusion
+            write_legacy_journal(path, legacy_id)
+            process = await asyncio.create_subprocess_exec(
+                str(SERVER), f"--journal={path}", "--prepare-legacy-reset",
+                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await process.communicate()
+            self.assertEqual((process.returncode, stdout, stderr), (0, b"", b""))
+            args = ("--paired=0", "--enrollment", f"--journal={path}")
+            async with self.system(*args, covers=0) as rig:
+                await until(lambda: rig.diagnostic() == "Pret", "boot reset recovery finalized")
+                self.assertEqual(rig.dongle.bursts(), [])
+                self.assertEqual(rig.covers(), {})
+                await self.candidate(rig)
+                self.assertNotIn(legacy_id, {b["identity"] for b in rig.dongle.bursts()})
+                await self.confirm(rig)
+                before = rig.registry()
+                await rig.dongle.restart(*args)
+                await until(lambda: rig.dongle.from_dongle.count(
+                    "0;255;3;0;14;Gateway startup complete.") == 2, "restart after recovery")
+                await asyncio.sleep(0.3)
+                self.assertEqual(len(rig.dongle.bursts()), 2)
+                self.assertEqual(rig.registry(), before)
+
+    async def test_corrupt_storage_is_never_formatted_or_emitted_by_manager_actions(self):
+        with temporary_directory(prefix="x2d-corrupt-") as directory:
+            path = Path(directory) / "journal.bin"
+            write_legacy_journal(path, 0xBEEF01)
+            damaged = bytearray(path.read_bytes())
+            damaged[100] ^= 1  # committed body CRC now disagrees
+            path.write_bytes(damaged)
+            async with self.system("--paired=0", "--enrollment", f"--journal={path}", covers=0) as rig:
+                self.assertEqual(rig.diagnostic(), "Erreur memoire")
+                for child in (PAIR, INITIALIZE):
+                    await rig.press(child)
+                await asyncio.sleep(0.4)
+                self.assertEqual(rig.dongle.bursts(), [])
+                self.assertEqual(path.read_bytes(), damaged)
+                self.assertEqual(rig.covers(), {})
 
 
 class FrontendChecks(unittest.TestCase):

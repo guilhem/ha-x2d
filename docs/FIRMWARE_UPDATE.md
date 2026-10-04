@@ -1,12 +1,12 @@
 # Update the USB dongle
 
-The **0.5.0** gateway accepts firmware updates over its existing MySensors USB
+The **0.6.0-rc1** gateway accepts firmware updates over its existing MySensors USB
 connection. The supported board is the **YD-RP2040 with 4 MiB flash**.
 
 ## First installation
 
 Build with `devenv tasks run firmware:build`, then copy
-`dist/ha_x2d-0.5.0-yd-rp2040-4mb.uf2` to the board in BOOTSEL mode.
+`dist/ha_x2d-0.6.0-rc1-yd-rp2040-4mb.uf2` to the board in BOOTSEL mode.
 The build checks the actual UF2 and binary before publishing them locally.
 The wrapper `python tools/build_firmware.py` is also available in `devenv shell`.
 A direct Arduino CLI build without the wrapper's flash reservation is refused
@@ -18,8 +18,25 @@ Old associations and counters are **not migrated**. The old journal at
 when that filesystem is first formatted/used. Establish a new journal and
 pair shutters again using the supervised procedure. Before changing layouts,
 stop the HA integration and remove its old MySensors node/device inventory;
-recreate its button helpers' device and action targets after pairing.
+discover new device pages after pairing.
 Do not interpret an empty new journal as permission to replay old RF counters.
+
+## First journal v2 use on the 0.5 layout
+
+This release preserves the 0.5 bootloader, partition map and reserved journal
+address. Installing it over 0.5 does not import the old associations/counters.
+After boot, a valid v1 journal blocks radio and reports **Initialisation requise**.
+Activate **Initialiser** in the native MySensors manager device once, then add
+motors through the [device-page lifecycle](../home_assistant/README.md).
+
+Initialization durably stores an empty v2 inventory and up to 16 old RF identities
+as allocation exclusions before erasing the v1 bank. A restart finishes the same
+reset without transmission. No usable v1 snapshot may remain before radio resumes.
+Corrupt/unknown versions are blocked instead of automatically formatted.
+
+Disable old cover automations, remove the old HA MySensors device and obsolete
+button helpers, then reload the integration. Pair the motors again and update
+their references. Ordinary later v2 updates preserve devices and counters.
 
 ## Subsequent serial updates
 
@@ -33,8 +50,8 @@ Do not interpret an empty new journal as permission to replay old RF counters.
    ```sh
    uv run python tools/update_firmware.py \
      /dev/serial/by-id/THE_GATEWAY_PORT \
-     dist/ha_x2d-0.5.0-yd-rp2040-4mb.bin \
-     --version 5 --device-id YOUR_16_DIGIT_USB_ID
+     dist/ha_x2d-0.6.0-rc1-yd-rp2040-4mb.bin \
+     --version 6 --device-id YOUR_16_DIGIT_USB_ID
    ```
 
    The ID is the physical flash ID exposed as the USB serial number. The
@@ -84,7 +101,7 @@ Integer fields are unsigned 16-bit little-endian words encoded as ASCII hex.
 | Stream type | Payload |
 | --- | --- |
 | 0, discovery request | empty; dongle replies with `I_LOG_MESSAGE` (`ota_id:<USB_ID>`) and type 0 current config |
-| 0, current config | `type, version, blocks=0, crc=0`; current type `0x5832`, version `5` |
+| 0, current config | `type, version, blocks=0, crc=0`; current type `0x5832`, version `6` |
 | 1, firmware offer | `type, version, block_count, CRC16` |
 | 2, block request | `type, version, block_index` |
 | 3, block response | same three words plus 16 firmware bytes |

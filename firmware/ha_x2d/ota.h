@@ -9,7 +9,7 @@
 // Wire integers are little endian; stream payloads are hexadecimal text.
 namespace x2d::ota {
 
-constexpr uint16_t FIRMWARE_TYPE = 0x5832, VERSION = 5;
+constexpr uint16_t FIRMWARE_TYPE = 0x5832, VERSION = 6;
 constexpr size_t BLOCK_BYTES = 16;
 constexpr uint32_t APPLICATION_OFFSET = 0x3000;
 constexpr uint32_t MAX_BLOCKS = 65535;

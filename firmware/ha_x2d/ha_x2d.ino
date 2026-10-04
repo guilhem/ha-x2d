@@ -27,28 +27,10 @@ constexpr uint8_t PIN_CS = 17;
 constexpr uint8_t PIN_SCK = 18;
 constexpr uint8_t PIN_MOSI = 19;
 
-// Standard builds transmit commands for identities already paired in the
-// journal; new enrollment remains a separately authorized supervised trial.
-#ifndef HA_X2D_SUPERVISED_TX
-#define HA_X2D_SUPERVISED_TX 0
-#endif
-static_assert(HA_X2D_SUPERVISED_TX == 0 || HA_X2D_SUPERVISED_TX == 1,
-              "supervised TX must be 0 or 1");
-#if HA_X2D_SUPERVISED_TX && !defined(HA_X2D_TRIAL_SUFFIX)
-#error "Set the private observed identity suffix for this supervised trial"
-#endif
-#ifndef HA_X2D_TRIAL_SUFFIX
-#define HA_X2D_TRIAL_SUFFIX 0
-#endif
-static_assert(HA_X2D_TRIAL_SUFFIX >= 0 && HA_X2D_TRIAL_SUFFIX <= 255,
-              "trial identity suffix must be one byte");
-#ifndef HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER
-#define HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER 0
-#endif
-static_assert(HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER == 0 ||
-              HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER == 2,
-              "trial expected next counter must be 0 or 2");
-constexpr bool ENROLLMENT_ENABLED = HA_X2D_SUPERVISED_TX;
+// Public candidate for the demonstrated enrollment waveform. The release
+// candidate still needs a physical association and command cycle on the motors.
+// Runtime MySensors operations grant bounded attempts; no per-shutter build.
+constexpr x2d::EnrollmentProfile ENROLLMENT_PROFILE{0x01};
 
 class BoardFlash final : public x2d::journal::Flash {
  public:
@@ -148,11 +130,7 @@ class RadioOutput {
 // entropy and the displayed firmware version belong in this adapter.
 // Referenced as the sketch version so linker GC retains the complete product
 // marker in every OTA-capable image (diagnostic sketches have no such marker).
-#if HA_X2D_SUPERVISED_TX
-const char FIRMWARE_ID[] = "HA-X2D YD-RP2040 OTA/1:0.5.0-trial";
-#else
-const char FIRMWARE_ID[] = "HA-X2D YD-RP2040 OTA/1:0.5.0";
-#endif
+const char FIRMWARE_ID[] = "HA-X2D YD-RP2040 OTA/1:0.6.0-rc1";
 struct Policy {
   uint32_t random_u32() { return rp2040.hwrand32(); }
   const char* firmware() {
@@ -198,11 +176,8 @@ void setup() {
   radio.reset();  // CC1101 manual reset; no frequency or transmit registers are set
   radio.configure_transmitter();  // verifies the profile while remaining in IDLE
   gateway.emplace(journal, radio_output, policy, device_id, &ota_storage);
-  const x2d::PairingAuthorization trial{
-      HA_X2D_SUPERVISED_TX ? uint8_t{1} : uint8_t{0},
-      HA_X2D_TRIAL_SUFFIX, HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER};
-  gateway->begin(true, ENROLLMENT_ENABLED,
-                 x2d::radio::digital_tx::DEFAULT_CHIP_NS, trial);
+  gateway->begin(true, true,
+                 x2d::radio::digital_tx::DEFAULT_CHIP_NS, ENROLLMENT_PROFILE);
 }
 
 void loop() {

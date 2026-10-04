@@ -1,6 +1,7 @@
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
-#include <vector>
 #include "mysensors.h"
 
 using namespace x2d;
@@ -39,14 +40,21 @@ struct Rig {
   uint32_t now = 0;
   explicit Rig(journal::MemoryFlash &flash, bool enrollment = false)
       : journal(flash), gateway(journal, radio, policy, "0123456789ABCDEF") {
-    gateway.begin(true, enrollment, 208500, enrollment ? PairingAuthorization{1, 0x5A, 0} : PairingAuthorization{});
+    gateway.begin(true, enrollment, 208500);
     gateway.connected();
   }
   std::string drain() {
     std::string out;
-    while (gateway.output_size()) {
-      out.append(gateway.output_data(), gateway.output_contiguous());
-      gateway.consume_output(gateway.output_contiguous());
+    // Drain between incremental presentation ticks: sixteen devices must fit
+    // the bounded serial buffer while RF continues to progress.
+    for (unsigned i = 0; i < 40 || (!gateway.failed() && gateway.presentation_pending()) || gateway.output_size(); ++i) {
+      assert(i < 2000);
+      while (gateway.output_size()) {
+        assert(gateway.output_size() <= 4096);
+        out.append(gateway.output_data(), gateway.output_contiguous());
+        gateway.consume_output(gateway.output_contiguous());
+      }
+      gateway.tick(now++);
     }
     return out;
   }
@@ -54,23 +62,36 @@ struct Rig {
     size_t at = 0;
     while (at < data.size()) {
       const size_t used = gateway.feed(data.data() + at, data.size() - at);
-      if (!used) break;
+      assert(used);
       at += used;
     }
   }
+  void set(uint8_t node, uint8_t child, bool on = true, uint8_t type = 2) {
+    feed(std::to_string(node) + ";" + std::to_string(child) + ";1;1;" + std::to_string(type) + ";" + (on ? "1\n" : "0\n"));
+  }
   void tick() { gateway.tick(now++); }
-  uint32_t next(uint8_t slot = 1) {
+  uint32_t next(uint8_t slot = 1, bool candidate = false) {
     uint32_t value;
-    assert(journal.next_counter(slot, &value));
+    assert(journal.next_counter(slot, &value, candidate));
     return value;
+  }
+  void finish_enrollment() {
+    radio.finish = true;
+    for (unsigned i = 0; i < 60; ++i) drain();
+    radio.finish = false;
+    assert(!radio.running);
   }
 };
 static void paired(journal::MemoryFlash &flash, uint8_t count = 1) {
   journal::Journal journal(flash);
   assert(journal.open() == journal::StorageState::empty);
+  assert(journal.initialize(1, 0x1000) == journal::Status::ok);
   for (uint8_t slot = 1; slot <= count; ++slot) {
+    while (journal.maintenance_due()) assert(journal.maintain() == journal::Status::ok);
     assert(journal.provision(slot, {static_cast<uint32_t>(0x100000 + slot), 10, 1}) == journal::Status::ok);
     assert(journal.confirm(slot) == journal::Status::ok);
+    assert(journal.set_service(slot, true) == journal::Status::ok);
+    assert(journal.shutter(slot).logical_id == slot + 1);
   }
   while (journal.maintenance_due()) assert(journal.maintain() == journal::Status::ok);
 }
@@ -80,77 +101,52 @@ static void has(const std::string &text, const std::string &part) {
     abort();
   }
 }
+static void absent(const std::string &text, const std::string &part) {
+  assert(text.find(part) == std::string::npos);
+}
 
 static void parser_and_discovery() {
   mysensors::Message message;
-  for (const std::string bad : {"", "1;1;1;1;29", "-1;1;1;1;29;1", "256;1;1;1;29;1",
-       "1;1;5;1;29;1", "1;1;1;2;29;1", "1;1;1;1;29;\t", "01a;1;1;1;29;1",
-       "1;1;1;1;29;12345678901234567890123456789"})
+  for (const std::string bad : {"", "2;1;1;1;29", "-1;1;1;1;29;1", "256;1;1;1;29;1",
+       "2;1;5;1;29;1", "2;1;1;2;29;1", "2;1;1;1;29;\t", "01a;1;1;1;29;1",
+       "2;1;1;1;29;12345678901234567890123456789"})
     assert(!mysensors::decode(bad.data(), bad.size(), message));
-  const std::string with_nul("1;1;1;1;29;1\0more", 17);
+  const std::string with_nul("2;1;1;1;29;1\0more", 17);
   assert(!mysensors::decode(with_nul.data(), with_nul.size(), message));
-  const std::string good = "1;1;1;1;29;1";
+  const std::string good = "2;1;1;1;29;1";
   assert(mysensors::decode(good.data(), good.size(), message) && message.type == 29);
   const std::string stream = "1;255;4;0;3;" + std::string(50, 'A');
   assert(mysensors::decode(stream.data(), stream.size(), message));
-  assert(strlen(message.payload) == 50);
   for (const std::string &bad : {
-       "1;255;4;0;3;" + std::string(52, 'A'),
-       "1;255;4;0;3;" + std::string(49, 'A'),
-       "1;255;4;0;3;" + std::string(44, 'G'),
-       "1;255;3;0;9;" + std::string(26, 'A'),
+       "1;255;4;0;3;" + std::string(52, 'A'), "1;255;4;0;3;" + std::string(49, 'A'),
+       "1;255;4;0;3;" + std::string(44, 'G'), "1;255;3;0;9;" + std::string(26, 'A'),
        "1;255;1;0;24;" + std::string(44, 'A')})
     assert(!mysensors::decode(bad.data(), bad.size(), message));
-  const std::string text = "1;255;3;0;9;" + std::string(25, 'Z');
-  assert(mysensors::decode(text.data(), text.size(), message));
   journal::MemoryFlash flash;
   paired(flash, 16);
   Rig rig(flash);
   const auto first = rig.drain();
   assert(!rig.gateway.failed());
-  for (unsigned slot = 1; slot <= 16; ++slot) {
-    has(first, "1;" + std::to_string(slot) + ";0;0;5;X2D 0123456789ABCDEF " + std::to_string(slot) + "\n");
-    has(first, "1;" + std::to_string(slot) + ";1;0;2;1\n");
+  for (unsigned node = 2; node <= 17; ++node) {
+    has(first, std::to_string(node) + ";1;0;0;5;");
+    has(first, std::to_string(node) + ";2;1;0;2;1\n");
   }
+  absent(first, "\n1;1;0;0;5;");
   const uint32_t writes = flash.programs();
-  for (const std::string line : {"0;255;3;0;2;\n", "255;255;3;0;20;\n", "1;255;3;0;19;\n",
-       "1;1;2;0;29;1\n", "1;1;2;1;31;\n", "1;19;2;0;24;\n", "1;255;3;0;18;\n",
-       "1;1;0;0;5;fake\n", "1;1;4;0;0;anything\n", "255;1;1;1;29;1\n",
-       "1;17;1;1;2;0\n", "1;18;1;1;2;0\n", "1;1;1;1;29;0\n"}) {
-    for (char byte : line) rig.feed(std::string(1, byte));  // real fragmented USB
+  for (const std::string line : {"0;255;3;0;2;\n", "255;255;3;0;20;\n", "2;255;3;0;19;\n",
+       "2;1;2;0;29;1\n", "2;1;2;1;31;\n", "1;19;2;0;24;\n", "17;255;3;0;18;\n",
+       "2;1;0;0;5;fake\n", "2;1;4;0;0;anything\n", "255;1;1;1;29;1\n",
+       "2;1;1;1;29;0\n"}) {
+    for (char byte : line) rig.feed(std::string(1, byte));
     rig.tick();
     rig.drain();
   }
   assert(rig.radio.starts == 0 && flash.programs() == writes);
-  rig.feed(std::string(200, 'x') + "\n1;1;2;0;2;\r\n");
-  has(rig.drain(), "invalid_message");
-  rig.feed("1;1;1;1;29;1;injected\n1;1;1;1;3;100\n1;19;1;1;24;write\n");
-  rig.tick();
-  has(rig.drain(), "unsupported_command");
+  rig.feed(std::string(200, 'x') + "\n2;1;2;0;2;\r\n");
+  has(rig.drain(), "Commande non supp");
+  rig.feed("2;1;1;1;29;1;injected\n2;1;1;1;3;100\n1;19;1;1;24;write\n");
+  has(rig.drain(), "Commande non supp");
   assert(!rig.radio.starts);
-}
-
-static void standard_policy() {
-  journal::MemoryFlash flash;
-  paired(flash);
-  Rig rig(flash);  // TX enabled, supervised enrollment disabled
-  has(rig.drain(), "ready,pos_unknown");
-  const auto writes = flash.programs();
-  rig.tick();
-  rig.gateway.disconnected();
-  rig.gateway.connected();
-  rig.tick();
-  rig.drain();
-  rig.feed("1;17;1;1;2;1\n1;18;1;1;2;1\n");
-  has(rig.drain(), "association_disabled");
-  rig.tick();
-  assert(rig.radio.starts == 0 && rig.next() == 10 && flash.programs() == writes);
-  assert(rig.journal.shutter(2).state == journal::SlotState::unused);
-  rig.radio.healthy = false;
-  rig.feed("1;1;1;1;29;1\n");
-  has(rig.drain(), "tx_off,pos_unknown");
-  rig.tick();
-  assert(rig.radio.starts == 0 && rig.next() == 10 && flash.programs() == writes);
 }
 
 static void commands_stop_and_reconnect() {
@@ -158,110 +154,164 @@ static void commands_stop_and_reconnect() {
   paired(flash);
   Rig rig(flash);
   rig.drain();
-  rig.feed("1;1;1;1;30;1\n");
+  rig.set(2, 1, true, 30);
   auto out = rig.drain();
-  has(out, "1;1;1;1;30;1\n");
-  has(out, "1;1;1;0;31;1\n");
-  assert(out.find("1;1;1;0;2;0\n") == std::string::npos);
-  rig.tick();
+  has(out, "2;1;1;1;30;1\n");
+  has(out, "2;1;1;0;31;1\n");
   assert(rig.radio.starts == 1 && rig.next() == 11);
   rig.radio.finish = true;
-  rig.tick();
   out = rig.drain();
-  has(out, "1;1;1;0;2;0\n");
-  has(out, "1:emitted");
+  has(out, "2;1;1;0;2;0\n");
   rig.radio.finish = false;
-  rig.feed("1;1;1;0;29;1\n");
+  rig.set(2, 1, true, 29);
   rig.tick();
-  rig.feed("1;1;1;0;30;1\n1;1;1;1;31;1\n");
+  rig.feed("255;255;3;0;19;\n2;1;1;0;30;1\n2;1;1;1;31;1\n");
   rig.tick();
-  assert(rig.radio.starts == 3 && rig.next() == 13); // close in queue consumed no counter
+  assert(rig.radio.starts == 3 && rig.next() == 13);
   rig.radio.finish = true;
-  rig.tick();
-  has(rig.drain(), "1:pos_unknown");
+  rig.drain();
   rig.radio.finish = false;
-  rig.feed("1;1;1;0;29;1\n");
+  rig.set(2, 1, true, 29);
   rig.tick();
-  rig.feed("1;1;1;0;30;1\n1;1;1;0;30;");
+  rig.feed("2;1;1;0;30;1\n2;1;1;0;30;");
   rig.gateway.disconnected();
   assert(rig.gateway.output_size() == 0);
   rig.tick();
   const auto starts = rig.radio.starts;
   rig.gateway.connected();
-  rig.feed("1\n"); // partial command from the previous connection was discarded
-  rig.tick();
-  has(rig.drain(), "invalid_message");
+  rig.feed("1\n");
+  has(rig.drain(), "Commande non supp");
   assert(rig.radio.starts == starts && rig.next() == 14);
-  // Uncertain TX consumes its reservation and invalidates the previous estimate.
-  rig.feed("1;1;1;0;30;1\n");
+  rig.set(2, 1, true, 30);
   rig.tick();
   rig.radio.fault = true;
-  rig.tick();
-  has(rig.drain(), "rf_fault,pos_unknown");
+  has(rig.drain(), "Erreur radio");
   assert(rig.next() == 15);
 }
 
-static void pairing_power_loss_and_corruption() {
+static void fresh_lifecycle_and_restart() {
   journal::MemoryFlash flash;
   {
     Rig rig(flash, true);
-    assert(rig.drain().find(";0;0;5;") == std::string::npos);
-    rig.feed("1;18;1;1;2;1\n");
-    has(rig.drain(), "no_pending_association");
-    rig.feed("1;17;1;1;2;1\n1;17;1;1;2;1\n1;18;1;1;2;1\n");
-    auto out = rig.drain();
-    has(out, "radio_busy");
-    has(out, "1;17;1;0;2;0\n");
-    has(out, "1;18;1;0;2;0\n");
-    rig.tick();
-    assert(rig.next() == 2 && rig.radio.starts == 1);
+    absent(rig.drain(), ";1;0;0;5;");
+    assert(!rig.radio.starts);
+    const auto writes = flash.programs();
+    rig.feed("0;17;1;1;2;1\n255;17;1;1;2;1\n0;1;1;1;29;1\n255;1;1;1;30;1\n0;3;1;1;2;1\n255;3;1;1;2;1\n");
+    rig.drain();
+    assert(!rig.radio.starts && flash.programs() == writes);
+    assert(!rig.journal.shutter(1).logical_id);
+    rig.set(1, 17);
+    rig.set(1, 17);
+    rig.drain();
+    assert(rig.journal.shutter(1).logical_id == 2 && rig.journal.shutter(1).attempts == 1);
+    assert(rig.journal.shutter(2).state == journal::SlotState::unused);
+    rig.set(2, 2);
+    has(rig.drain(), "Radio occupee");
+    assert(!rig.journal.shutter(1).in_service && rig.journal.shutter(1).has_candidate);
+    rig.finish_enrollment();
+    assert(rig.radio.starts == 2 && rig.next(1, true) == 2);
+    rig.set(2, 4);
+    rig.finish_enrollment();
+    assert(rig.radio.starts == 4 && rig.next(1, true) == 4);
+    rig.set(2, 4);
+    rig.drain();
+    assert(rig.radio.starts == 4 && rig.journal.shutter(1).attempts == 2);
   }
   {
     Rig rig(flash, true);
     rig.drain();
+    assert(!rig.radio.starts && rig.next(1, true) == 4);
+    rig.set(2, 2);
+    has(rig.drain(), "2;1;0;0;5;");
+    const auto primary = rig.journal.incarnation(1);
+    rig.set(2, 2, false);
+    rig.set(2, 3);
+    rig.finish_enrollment();
+    assert(rig.journal.shutter(1).replacement && !rig.journal.shutter(1).in_service);
+    assert(rig.journal.incarnation(1, true) != primary);
+    rig.set(2, 3, false);
+    rig.drain();
+    assert(!rig.journal.shutter(1).has_candidate && !rig.journal.shutter(1).in_service);
+    const auto starts = rig.radio.starts;
+    rig.set(2, 1, true, 29);
+    rig.drain();
+    assert(rig.radio.starts == starts);
+    rig.set(2, 5);
+    rig.drain();
+    assert(rig.journal.shutter(1).logical_id == 0);
+    rig.set(1, 17);
+    rig.finish_enrollment();
+    assert(rig.journal.shutter(1).logical_id == 3);
+    rig.set(3, 2);
+    has(rig.drain(), "3;1;0;0;5;");
+    const auto writes = flash.programs();
+    const auto before = rig.radio.starts;
+    rig.feed("2;1;1;1;29;1\n2;2;1;1;2;1\n2;3;1;1;2;1\n2;4;1;1;2;1\n2;5;1;1;2;1\n");
+    rig.drain();
+    assert(rig.radio.starts == before && flash.programs() == writes);
+    assert(rig.journal.incarnation(1) != primary);
+  }
+  Rig restored(flash, true);
+  has(restored.drain(), "3;1;0;0;5;");
+  assert(!restored.radio.starts);
+}
+
+static void decline_and_replacement_preserves_node() {
+  journal::MemoryFlash flash;
+  Rig rig(flash, true);
+  rig.drain();
+  rig.set(1, 17);
+  rig.finish_enrollment();
+  rig.set(1, 17, false);
+  rig.drain();
+  assert(rig.journal.shutter(1).state == journal::SlotState::unused);
+  rig.set(1, 17);
+  rig.finish_enrollment();
+  rig.set(3, 2);
+  rig.drain();
+  assert(rig.journal.shutter(1).logical_id == 3);
+  const auto epoch = rig.journal.incarnation(1);
+  rig.set(3, 2, false);
+  rig.set(3, 3);
+  rig.finish_enrollment();
+  rig.set(3, 2);
+  rig.drain();
+  assert(rig.journal.shutter(1).logical_id == 3 && rig.journal.shutter(1).in_service);
+  assert(rig.journal.incarnation(1) != epoch);
+}
+
+static void corruption_and_slow_host() {
+  journal::MemoryFlash flash;
+  paired(flash);
+  {
+    Rig rig(flash);
+    rig.drain();
+    rig.set(2, 1, true, 29);
     rig.tick();
-    assert(rig.radio.starts == 0 && rig.next() == 2);
-    rig.feed("1;18;1;1;2;1\n");
-    has(rig.drain(), "1;1;0;0;5;X2D 0123456789ABCDEF 1\n");
-    rig.feed("1;18;1;1;2;1\n");
-    has(rig.drain(), "no_pending_association");
-    assert(rig.radio.starts == 0);
+    for (unsigned i = 0; i < 1000 && !rig.gateway.failed(); ++i) rig.feed("2;1;2;0;2;\n");
+    assert(rig.gateway.failed());
+    rig.tick();
+    assert(!rig.radio.running && rig.next() == 11);
+    has(rig.drain(), "serial_overflow");
+    rig.gateway.disconnected();
+    rig.gateway.connected();
+    rig.drain();
+    assert(!rig.gateway.failed() && rig.radio.starts == 1);
   }
   flash.raw()[0] ^= 0xFF;
   const auto writes = flash.programs();
   Rig broken(flash, true);
-  has(broken.drain(), "storage_corrupt");
-  broken.feed("1;1;1;1;29;1\n1;17;1;1;2;1\n1;18;1;1;2;1\n");
-  broken.tick();
-  has(broken.drain(), "storage_corrupt");
-  assert(broken.radio.starts == 0 && flash.programs() == writes);
-}
-
-static void slow_host() {
-  journal::MemoryFlash flash;
-  paired(flash);
-  Rig rig(flash);
-  rig.drain();
-  rig.feed("1;1;1;1;29;1\n");
-  rig.tick();
-  for (unsigned i = 0; i < 1000 && !rig.gateway.failed(); ++i)
-    rig.feed("1;1;2;0;2;\n"); // host never reads; cannot block radio service
-  assert(rig.gateway.failed());
-  rig.tick();
-  assert(!rig.radio.running && rig.next() == 11);
-  has(rig.drain(), "serial_overflow");
-  rig.gateway.disconnected();
-  rig.gateway.connected();
-  rig.drain();
-  rig.tick();
-  assert(!rig.gateway.failed() && rig.radio.starts == 1);
+  has(broken.drain(), "Erreur memoire");
+  broken.feed("2;1;1;1;29;1\n1;17;1;1;2;1\n1;20;1;1;2;1\n");
+  broken.drain();
+  assert(!broken.radio.starts && flash.programs() == writes);
 }
 
 int main() {
   parser_and_discovery();
-  standard_policy();
   commands_stop_and_reconnect();
-  pairing_power_loss_and_corruption();
-  slow_host();
-  puts("mysensors: framing, discovery, echoes, STOP, reconnect, pairing and bounded buffers passed");
+  fresh_lifecycle_and_restart();
+  decline_and_replacement_preserves_node();
+  corruption_and_slow_host();
+  puts("mysensors: virtual-node discovery, lifecycle, RF epoch isolation, restart, STOP and bounded buffers passed (simulated RF)");
 }

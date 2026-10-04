@@ -34,7 +34,7 @@ struct Radio {
 
 struct Policy {
   uint32_t random_u32() { return 42; }
-  const char *firmware() { return "0.5.0"; }
+  const char *firmware() { return "0.6.0-rc1"; }
 };
 
 void put_u32(uint8_t *bytes, uint32_t value) {
@@ -115,8 +115,13 @@ struct Rig {
     assert(journal.provision(1, {0x100001, 10, 1}) == journal::Status::ok);
     assert(journal.confirm(1) == journal::Status::ok);
     while (journal.maintenance_due()) assert(journal.maintain() == journal::Status::ok);
-    assert(gateway.begin(true, true, 208500, {1, 1, 10}));
+    assert(gateway.begin(true, true, 208500, {1}));
     gateway.connected();
+    for (unsigned step = 0; gateway.presentation_pending() && step < 500; ++step) {
+      gateway.tick(0);
+      drain();
+    }
+    assert(!gateway.presentation_pending());
     drain();
   }
   std::string drain() {
@@ -215,14 +220,15 @@ void discovery_and_commit() {
   rig.feed("1;255;3;0;13;\n");
   assert(!rig.gateway.reboot_requested());
   rig.feed("1;255;4;0;0;\r\n", 1);
-  assert(rig.drain() == "1;255;3;0;9;ota_id:0123456789ABCDEF\n1;255;4;0;0;3258050000000000\n");
+  assert(rig.drain() == "1;255;3;0;9;ota_id:0123456789ABCDEF\n1;255;4;0;0;3258060000000000\n");
   assert(!rig.gateway.updating() && rig.storage.begins == 0);
   const auto bytes = image();
   assert(bytes.back() == 0xFF);
   offer(rig, bytes);
-  rig.feed("1;1;1;1;29;1\n1;1;1;1;30;1\n1;1;1;1;31;1\n1;17;1;1;2;1\n1;18;1;1;2;1\n");
+  rig.feed("2;1;1;1;29;1\n2;1;1;1;30;1\n2;1;1;1;31;1\n1;17;1;1;2;1\n1;20;1;1;2;1\n");
+  rig.tick(rig.now);  // queued authoritative refusal is still serviced during OTA
   const auto blocked = rig.drain();
-  has(blocked, "ota_busy");
+  has(blocked, "Mise a jour en cours");
   assert(blocked.find(";1;1;") == std::string::npos);  // no actuator receipt echo
   assert(rig.next() == 10 && rig.flash.programs() == writes && rig.radio.starts == 0);
   transfer(rig, bytes);
@@ -240,7 +246,7 @@ void discovery_and_commit() {
   assert(rig.gateway.reboot_requested());
   rig.tick(50000);
   assert(rig.storage.finishes == 1 && rig.storage.aborts == 0 && rig.next() == 10);
-  rig.feed("1;1;1;0;29;1\n");
+  rig.feed("2;1;1;0;29;1\n");
   rig.tick(50001);
   assert(rig.radio.starts == 0);
 }
@@ -272,7 +278,7 @@ void bounded_retry_and_duplicates() {
   has(out, "ota_error:timeout");
   no_completion(rig, out);
   assert(!rig.gateway.updating() && rig.storage.aborts == 1 && rig.storage.writes == 1);
-  rig.feed("1;1;1;0;29;1\n");
+  rig.feed("2;1;1;0;29;1\n");
   rig.tick(rig.now + 1);
   assert(rig.radio.starts == 1 && rig.next() == 11);  // resume only freshly requested RF
 }
@@ -410,7 +416,7 @@ void disconnect_before_and_after_commit() {
   rig.gateway.connected();
   rig.drain();
   rig.feed(config(bytes));
-  rig.feed("1;1;1;0;29;1\n");
+  rig.feed("2;1;1;0;29;1\n");
   rig.tick(3);
   assert(rig.radio.starts == 0 && rig.storage.begins == 1 && rig.storage.finishes == 1);
 }
@@ -418,10 +424,10 @@ void disconnect_before_and_after_commit() {
 void rf_settles_before_flash() {
   const auto bytes = image();
   Rig rig;
-  rig.feed("1;1;1;0;29;1\n");
+  rig.feed("2;1;1;0;29;1\n");
   rig.tick(0);
   assert(rig.radio.running && rig.next() == 11);
-  rig.feed("1;1;1;0;30;1\n");  // queued but not reserved
+  rig.feed("2;1;1;0;30;1\n");  // queued but not reserved
   rig.feed(config(bytes));
   rig.drain();
   assert(rig.radio.stopping && rig.storage.begins == 0);
@@ -443,7 +449,7 @@ void rf_settles_before_flash() {
   assert(rig.radio.starts == 1 && rig.next() == 11);  // dropped CLOSE never replays
 
   Rig held;
-  held.feed("1;1;1;0;29;1\n");
+  held.feed("2;1;1;0;29;1\n");
   held.tick(0);
   held.feed(config(bytes));
   held.drain();
@@ -463,7 +469,7 @@ void slow_host_and_commit_output_failure() {
     if (phase) transfer(rig, bytes);
     if (phase == 2) rig.tick(1);
     for (unsigned i = 0; i < 1000 && !rig.gateway.failed(); ++i)
-      rig.feed("1;255;3;0;18;\n");
+      rig.feed("1;255;3;0;2;\n");
     assert(rig.gateway.failed());
     rig.tick(2);
     const auto out = rig.drain();
@@ -480,9 +486,9 @@ void slow_host_and_commit_output_failure() {
   transfer(rig, bytes);
   // Fill the output to leave insufficient space for ota_staged. The durable
   // finish remains committed even if its notification itself overflows.
-  const std::string heartbeat = "1;255;3;0;22;0\n";
-  while (rig.gateway.output_size() + heartbeat.size() <= OutputBuffer::CAPACITY)
-    rig.feed("1;255;3;0;18;\n");
+  const std::string version_reply = "1;255;3;0;2;2.3.2\n";
+  while (rig.gateway.output_size() + version_reply.size() <= OutputBuffer::CAPACITY)
+    rig.feed("1;255;3;0;2;\n");
   assert(!rig.gateway.failed());
   rig.tick(1);
   assert(rig.gateway.failed() && rig.gateway.ota_committed() && rig.storage.committed);

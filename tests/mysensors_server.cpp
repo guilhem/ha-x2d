@@ -5,9 +5,10 @@
 //
 //   mysensors_server [--control-fd=N] [--burst-ms=N] [--paired=N] [--journal=FILE]
 //                    [--device-id=HEX16] [--generation=HEX16] [--identity-base=HEX6]
-//                    [--seed=N] [--no-tx] [--enrollment] [--authorize=SLOT:SUFFIX:COUNTER]
+//                    [--seed=N] [--no-tx] [--enrollment] [--enrollment-suffix=HEX2]
 //                    [--fault=none|unavailable|start|poll]
 //                    [--ota-file=PATH] [--ota-prefix=PATH]
+//                    [--prepare-legacy-reset]
 //
 //   --paired=N     slots 1..N confirmed on first use of EMPTY storage (default 16,
 //                  0 = leave the journal empty). A populated journal is never
@@ -19,12 +20,16 @@
 //   --burst-ms=N   duration of a full 25-copy burst (default 80).
 //   --fault=...    radio faults: unavailable (available() is false), start
 //                  (start_burst refuses), poll (the burst reports unknown).
-//   --authorize    PairingAuthorization{slot, identity suffix (hex), next counter}.
+//   --enrollment-suffix  EnrollmentProfile identity suffix (default 01).
+//                  This simulated fixture does not qualify a motor profile.
 //   --ota-file     enable TEST-ONLY OTA storage; save the 16-byte-padded image
 //                  here and acknowledge staging without rebooting the simulator.
 //   --ota-prefix   reference image/prefix: read its first 0x3000 bytes BEFORE
 //                  receiving OTA. Without it, byte i is (37*i + 11) & 255,
 //                  matching check_ota's synthetic image. Requires --ota-file.
+//   --prepare-legacy-reset  TEST-ONLY: commit the initial reset marker in an
+//                  existing v1 file and exit before maintenance, simulating a
+//                  power cut before legacy sectors are erased. Emits no RF.
 //
 // stdin/stdout carry serial bytes only. EOF on stdin exits after the output is
 // flushed. --control-fd is an inherited bidirectional stream socket; without it
@@ -91,12 +96,14 @@ class FileFlash final : public journal::Flash {
       exit(1);
     }
     const ssize_t got = pread(fd_, data_, sizeof(data_), 0);
-    if (got != static_cast<ssize_t>(sizeof(data_))) {  // new or truncated: start erased
-      memset(data_, 0xFF, sizeof(data_));
+    if (got == 0) {  // new file only; an existing truncated journal is not empty
       if (pwrite(fd_, data_, sizeof(data_), 0) != static_cast<ssize_t>(sizeof(data_))) {
         fprintf(stderr, "cannot initialize the journal file %s\n", path.c_str());
         exit(1);
       }
+    } else if (got != static_cast<ssize_t>(sizeof(data_))) {
+      fputs("truncated simulated journal; refusing to format it\n", stderr);
+      exit(1);
     }
   }
   ~FileFlash() override { if (fd_ >= 0) close(fd_); }
@@ -142,9 +149,15 @@ bool decode_first_copy(const radio::Waveform& wave, radio::ParsedBody& parsed) {
   for (int i = 0; i < 8; ++i) if (!cell() || bit) return false;    // preamble zeros
   for (int i = 0; i < 6; ++i) if (!cell() || !bit) return false;   // frame start
   if (!cell() || bit) return false;
-  uint8_t body[radio::BODY_BYTES] = {};
+  // The second enrollment gesture is 13 bytes; the first changes a fixed
+  // header byte. Ordinary-command parse_body deliberately rejects both. Decode
+  // the actual stuffed first frame, retaining its observed action and counter.
+  uint8_t body[radio::MAX_BODY_BYTES] = {};
   unsigned ones = 0;
-  for (size_t i = 0; i < sizeof(body); ++i) {
+  size_t length = 0;
+  const size_t body_end = wave.frame_end(0) - 18;  // eight ones and a zero trailer
+  while (at < body_end && length < sizeof(body)) {
+    const size_t i = length++;
     for (int j = 0; j < 8; ++j) {
       if (!cell()) return false;
       if (bit) body[i] |= static_cast<uint8_t>(1u << j);
@@ -155,7 +168,18 @@ bool decode_first_copy(const radio::Waveform& wave, radio::ParsedBody& parsed) {
       }
     }
   }
-  return radio::parse_body(body, sizeof(body), &parsed);
+  if (at != body_end || (length != 12 && length != 13)) return false;
+  if (length == 12 && radio::parse_body(body, length, &parsed)) return true;
+  const bool first = length == 12 && body[4] == 0x85 && body[7] == 0x02;
+  const bool second = length == 13 && body[4] == 0x05 && body[7] == 0x20 && body[8] == 0x07;
+  if ((!first && !second) || body[3] != 0x01 || body[5] != 0x98 || body[6] != 0x22 ||
+      ((body[length - 2] << 8) | body[length - 1]) != radio::body_checksum(body, length)) return false;
+  parsed.identity = (uint32_t{body[0]} << 16) | (uint32_t{body[1]} << 8) | body[2];
+  parsed.action = body[7];
+  const size_t counter_at = second ? 9 : 8;
+  parsed.rolling_word = static_cast<uint16_t>(body[counter_at] | (body[counter_at + 1] << 8));
+  parsed.counter = radio::rolling_decode(parsed.rolling_word, parsed.identity);
+  return true;
 }
 
 // Radio backend: a burst advances one whole copy per copy_ms of clock time, and
@@ -315,8 +339,9 @@ struct Options {
   uint64_t generation = 0x0123456789ABCDEFull;
   uint32_t identity_base = 0xA00000;
   std::string device_id = "0123456789ABCDEF", journal_file, ota_file, ota_prefix;
-  bool tx = true, enrollment = false, unavailable = false, fail_start = false, fail_poll = false;
-  PairingAuthorization authorization{};
+  bool tx = true, enrollment = false, unavailable = false, fail_start = false, fail_poll = false,
+       prepare_legacy_reset = false;
+  EnrollmentProfile profile{};
 };
 
 bool number(const std::string& text, uint64_t maximum, int base, uint64_t& out) {
@@ -338,6 +363,7 @@ bool parse(int argc, char** argv, Options& options) {
     uint64_t n = 0;
     if (name == "--no-tx" && !has_value) options.tx = false;
     else if (name == "--enrollment" && !has_value) options.enrollment = true;
+    else if (name == "--prepare-legacy-reset" && !has_value) options.prepare_legacy_reset = true;
     else if (name == "--control-fd" && number(value, 1023, 10, n)) options.control = static_cast<int>(n);
     else if (name == "--burst-ms" && number(value, 600000, 10, n) && n) options.burst_ms = static_cast<uint32_t>(n);
     else if (name == "--paired" && number(value, journal::SLOTS, 10, n)) options.paired = static_cast<uint32_t>(n);
@@ -352,29 +378,37 @@ bool parse(int argc, char** argv, Options& options) {
     else if (name == "--fault" && value == "unavailable") options.unavailable = true;
     else if (name == "--fault" && value == "start") options.fail_start = true;
     else if (name == "--fault" && value == "poll") options.fail_poll = true;
-    else if (name == "--authorize") {
-      unsigned slot = 0, suffix = 0, counter = 0;
-      char extra = 0;
-      if (sscanf(value.c_str(), "%u:%x:%u%c", &slot, &suffix, &counter, &extra) != 3 ||
-          !slot || slot > journal::SLOTS || suffix > 0xFF) return false;
-      options.authorization = {static_cast<uint8_t>(slot), static_cast<uint8_t>(suffix), counter};
-    } else return false;
+    else if (name == "--enrollment-suffix" && number(value, 0xFF, 16, n))
+      options.profile.identity_suffix = static_cast<uint8_t>(n);
+    else return false;
   }
   return options.ota_prefix.empty() || !options.ota_file.empty();
 }
 
 void provision_paired(journal::Journal& journal, const Options& options) {
   if (journal.open() != journal::StorageState::empty) return;
+  if (!options.paired) return;  // lifecycle tests exercise the real fresh-start path
+  if (journal.initialize(options.generation, static_cast<uint16_t>(options.identity_base >> 8)) != journal::Status::ok) {
+    fputs("cannot initialize the simulated journal\n", stderr);
+    exit(1);
+  }
   for (uint8_t slot = 1; slot <= options.paired; ++slot) {
+    while (journal.maintenance_due()) {
+      if (journal.maintain() != journal::Status::ok) exit(1);
+    }
     journal::NewController fresh;
     fresh.identity = options.identity_base | (uint32_t{slot} << 8) | slot;
     fresh.first_counter = static_cast<uint16_t>(100u * slot);
     fresh.generation = options.generation;
     if (journal.provision(slot, fresh) != journal::Status::ok ||
-        journal.confirm(slot) != journal::Status::ok) {
+        journal.confirm(slot) != journal::Status::ok ||
+        journal.set_service(slot, true) != journal::Status::ok) {
       fputs("cannot provision the simulated journal\n", stderr);
       exit(1);
     }
+  }
+  while (journal.maintenance_due()) {
+    if (journal.maintain() != journal::Status::ok) exit(1);
   }
 }
 
@@ -389,9 +423,9 @@ int main(int argc, char** argv) {
   if (!parse(argc, argv, options) || !hex16(options.device_id.c_str())) {
     fputs("usage: mysensors_server [--control-fd=N] [--burst-ms=N] [--paired=N] [--journal=FILE]\n"
           "       [--device-id=HEX16] [--generation=HEX16] [--identity-base=HEX6] [--seed=N]\n"
-          "       [--no-tx] [--enrollment]\n"
+          "       [--no-tx] [--enrollment] [--prepare-legacy-reset]\n"
           "       [--ota-file=PATH] [--ota-prefix=PATH] (test storage, no reboot)\n"
-          "       [--authorize=SLOT:SUFFIX:COUNTER] [--fault=none|unavailable|start|poll]\n",
+          "       [--enrollment-suffix=HEX2] [--fault=none|unavailable|start|poll]\n",
           stderr);
     return 2;
   }
@@ -408,6 +442,15 @@ int main(int argc, char** argv) {
 
   FileFlash flash(options.journal_file);
   journal::Journal journal(flash);
+  if (options.prepare_legacy_reset) {
+    if (options.journal_file.empty() || journal.open() != journal::StorageState::legacy ||
+        journal.initialize(options.generation, static_cast<uint16_t>(options.identity_base >> 8),
+                           options.profile.identity_suffix) != journal::Status::ok) {
+      fputs("legacy reset fixture requires an existing valid v1 journal\n", stderr);
+      return 1;
+    }
+    return 0;  // no maintain(), controller, radio or serial bytes
+  }
   provision_paired(journal, options);
   SimRadio radio(clock);
   radio.copy_ms = options.burst_ms >= 25 ? options.burst_ms / 25 : 1;
@@ -420,7 +463,7 @@ int main(int argc, char** argv) {
   if (!options.ota_file.empty()) ota_storage.emplace(radio, options.ota_file, options.ota_prefix);
   mysensors::Gateway<SimRadio, Policy> gateway(journal, radio, policy, options.device_id.c_str(),
                                              ota_storage ? &*ota_storage : nullptr);
-  gateway.begin(options.tx, options.enrollment, 208500, options.authorization);
+  gateway.begin(options.tx, options.enrollment, 208500, options.profile);
   char generation[17] = "none";
   journal.generation_hex(generation);
   unsigned paired = 0;
