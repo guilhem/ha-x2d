@@ -18,6 +18,16 @@ inline bool valid_layout() {
 // outside every filesystem erase/program operation and OTA destination range.
 class OTAStorage final : public ota::Storage {
  public:
+  // Startup only, before RF is enabled. Hashing the whole executable in the
+  // serial loop can starve the transmitter's FIFO during a presentation probe.
+  // This reads active flash and linker bounds; it never mounts staging.
+  void initialize_running_config() {
+    running_ = valid_layout()
+        ? ota::running_config(reinterpret_cast<const uint8_t *>(ota::FLASH_BASE),
+                              reinterpret_cast<uintptr_t>(&__flash_binary_end) - ota::FLASH_BASE)
+        : ota::FirmwareConfig{};
+  }
+  ota::FirmwareConfig running_config() const override { return running_; }
   bool begin(uint32_t bytes) override {
     if (committed_) return false;
     file_.close();
@@ -35,7 +45,7 @@ class OTAStorage final : public ota::Storage {
     return file_ && file_.size() <= expected_ && length <= expected_ - file_.size() &&
            file_.write(block, length) == length;
   }
-  bool finish(uint16_t crc) override {
+  bool finish(uint16_t crc, uint16_t version) override {
     if (!file_ || file_.size() != expected_) return false;
     // Core 6.1.1 programs a whole 4KiB sector even for the last short read.
     // Pad explicitly so its final copy never writes stale bytes from a prior read.
@@ -50,7 +60,7 @@ class OTAStorage final : public ota::Storage {
     file_.close();
     File verify = LittleFS.open("firmware.bin", "r");
     if (!verify || verify.size() != padded) return false;
-    ota::ImageVerifier check(reinterpret_cast<const uint8_t *>(ota::FLASH_BASE), expected_, crc);
+    ota::ImageVerifier check(reinterpret_cast<const uint8_t *>(ota::FLASH_BASE), expected_, crc, version);
     uint8_t buffer[256];
     uint32_t checked = 0;
     while (checked < expected_) {
@@ -104,6 +114,7 @@ class OTAStorage final : public ota::Storage {
            entry.write.fileLength == padded - ota::APPLICATION_OFFSET;
   }
   File file_;
+  ota::FirmwareConfig running_{};
   uint32_t expected_ = 0;
   bool committed_ = false;
 };

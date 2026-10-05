@@ -28,7 +28,8 @@ def binary(size=ota.APP_OFFSET + 33):
     data = bytearray(index % 256 for index in range(size))
     struct.pack_into("<4I", data, ota.APP_OFFSET - 16, *layout.PARTITION)
     struct.pack_into("<2I", data, ota.APP_OFFSET, 0x20042000, 0x10003009)
-    data[ota.APP_OFFSET + 8:ota.APP_OFFSET + 8 + len(layout.IMAGE_MARKER)] = layout.IMAGE_MARKER
+    marker = layout.IMAGE_MARKER + b"5:"
+    data[ota.APP_OFFSET + 8:ota.APP_OFFSET + 8 + len(marker)] = marker
     return bytes(data)
 
 
@@ -87,6 +88,10 @@ def run(serial, **kwargs):
 
 
 class EncodingTests(unittest.TestCase):
+    def test_compiled_version_must_match_transfer_identity(self):
+        with self.assertRaisesRegex(ValueError, "compiled image"):
+            ota.Firmware.from_bytes(IMAGE, 6)
+
     def test_crc_known_modbus_vectors(self):
         self.assertEqual(ota.crc16(b""), 0xFFFF)
         self.assertEqual(ota.crc16(b"123456789"), 0x4B37)
@@ -105,7 +110,7 @@ class EncodingTests(unittest.TestCase):
 
     def test_little_endian_uppercase_config_and_exact_block_response(self):
         firmware = ota.Firmware(FIRMWARE.data, 0x1234, 0xABCD)
-        self.assertEqual(firmware.config_response(), b"1;255;4;0;1;325834120303CDAB\n")
+        self.assertEqual(firmware.config_response(), b"1;255;4;0;1;325834120803CDAB\n")
         index, response = firmware.block_response("325834120100")
         self.assertEqual(index, 1)
         self.assertEqual(response, b"1;255;4;0;3;325834120100101112131415161718191A1B1C1D1E1F\n")
@@ -116,13 +121,13 @@ class EncodingTests(unittest.TestCase):
         with patch.object(layout, "validate_binary", wraps=layout.validate_binary) as validator:
             firmware = ota.Firmware.from_bytes(data, 5)
         validator.assert_called_once_with(data)
-        self.assertEqual(firmware.data, data + b"\xff" * 15)
-        self.assertEqual(firmware.blocks, 771)
-        self.assertEqual(firmware.checksum, ota.crc16(data + b"\xff" * 15))
+        self.assertEqual(firmware.data, data + b"\xff" * 95)
+        self.assertEqual(firmware.blocks, 776)
+        self.assertEqual(firmware.checksum, ota.crc16(data + b"\xff" * 95))
         self.assertNotEqual(firmware.checksum, ota.crc16(firmware.data[ota.APP_OFFSET:]))
 
     def test_no_extra_block_when_image_is_already_aligned(self):
-        data = binary(ota.APP_OFFSET + 32)
+        data = binary(ota.APP_OFFSET + 128)
         self.assertEqual(ota.Firmware.from_bytes(data, 5).data, data)
 
     def test_size_version_and_shared_layout_rejection(self):
@@ -141,14 +146,22 @@ class EncodingTests(unittest.TestCase):
                 ota.Firmware.from_bytes(data, 5)
 
     def test_maximum_block_count_and_last_block(self):
-        firmware = ota.Firmware.from_bytes(binary(ota.MAX_IMAGE_SIZE), 65535)
-        self.assertEqual(firmware.blocks, 65535)
-        self.assertEqual(firmware.block_response("3258FFFFFEFF")[0], 65534)
+        firmware = ota.Firmware.from_bytes(binary(layout.MAX_IMAGE_SIZE), 5)
+        self.assertEqual(firmware.blocks, 65528)
+        self.assertEqual(firmware.block_response("32580500F7FF")[0], 65527)
         with self.assertRaisesRegex(ota.UpdateError, "out of range"):
-            firmware.block_response("3258FFFFFFFF")
+            firmware.block_response("32580500F8FF")
 
 
 class TransferTests(unittest.TestCase):
+    def test_standard_five_word_announcement_and_legacy_four_word_migration(self):
+        standard = ota.stream_message(0, struct.pack("<5H", ota.FIRMWARE_TYPE, 4, 776, 0xABCD, 1).hex())
+        for current in (standard, CURRENT):
+            with self.subTest(config=current):
+                serial = FakeSerial([IDENTITY + current + remaining_requests() + STAGED])
+                self.assertEqual(run(serial), FIRMWARE.blocks)
+                self.assertEqual(serial.writes[-1], ota.REBOOT_RECEIPT)
+
     def test_fragmented_input_coalescing_noise_crlf_and_staged_completion(self):
         noise = b"boot log\n0;255;3;0;14;Gateway startup complete\n1;1;4;0;2;broken\n"
         traffic = noise + IDENTITY + CURRENT + request(1) + remaining_requests(1) + STAGED
@@ -551,6 +564,87 @@ class GatewayInteropTests(unittest.TestCase):
     def setUpClass(cls):
         if not SERVER.is_file():
             raise RuntimeError(f"Build the real mysensors_server target before running OTA tests: {SERVER}")
+
+    def test_simulated_reset_discards_commands_beyond_the_rx_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            active = Path(directory) / "active.bin"
+            staged = Path(directory) / "staged.bin"
+            journal = Path(directory) / "journal.bin"
+            active.write_bytes(FIRMWARE.data)
+            command = [str(SERVER), "--ota-reboot", f"--ota-active={active}",
+                       f"--ota-file={staged}", f"--journal={journal}", "--paired=1"]
+            subprocess.run(command, input=b"", capture_output=True, check=True, timeout=2)
+            before = journal.read_bytes()
+            # One atomic pipe write: reboot is consumed from the 256-byte RX
+            # window, while OPEN remains unread in stdin across the reset.
+            packet = ota.REBOOT_RECEIPT.ljust(256, b"\n") + b"2;1;1;0;29;1\n"
+            result = subprocess.run(command, input=packet, capture_output=True, check=True, timeout=2)
+            self.assertIn(b"ota reboot", result.stderr)
+            self.assertNotIn(b"burst start", result.stderr)
+            self.assertEqual(journal.read_bytes(), before)
+            self.assertEqual(active.read_bytes(), FIRMWARE.data)
+            self.assertFalse(staged.exists())
+
+    def test_simulated_reset_waits_for_control_reconnect_and_preserves_active_journal(self):
+        import select
+        import socket
+        import time
+        with tempfile.TemporaryDirectory() as directory:
+            active = Path(directory) / "active.bin"
+            staged = Path(directory) / "staged.bin"
+            journal = Path(directory) / "journal.bin"
+            active.write_bytes(FIRMWARE.data)
+            controller, device = socket.socketpair()
+            controller.settimeout(2)
+            process = subprocess.Popen(
+                [str(SERVER), f"--control-fd={device.fileno()}", "--ota-reboot",
+                 f"--ota-active={active}", f"--ota-file={staged}", f"--journal={journal}", "--paired=1"],
+                pass_fds=(device.fileno(),), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, bufsize=0)
+            device.close()
+            buffer = bytearray()
+
+            def config():
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    while b"\n" in buffer:
+                        line, _, rest = buffer.partition(b"\n")
+                        buffer[:] = rest
+                        if line.startswith(b"1;255;4;0;0;"):
+                            return ota.unpack_hex(line.split(b";", 5)[5].decode(), 5)
+                    if select.select([process.stdout], [], [], 0.05)[0]:
+                        chunk = os.read(process.stdout.fileno(), 4096)
+                        self.assertTrue(chunk)
+                        buffer.extend(chunk)
+                self.fail("No fresh active config after reconnect")
+
+            try:
+                controller.sendall(b"C")
+                self.assertEqual(controller.recv(1), b"C")
+                expected = (ota.FIRMWARE_TYPE, 5, FIRMWARE.blocks, FIRMWARE.checksum, 1)
+                self.assertEqual(config(), expected)
+                before = journal.read_bytes()
+                process.stdin.write(ota.REBOOT_RECEIPT)
+                self.assertEqual(controller.recv(1), b"B")
+                buffer.clear()  # old application evidence cannot cross a USB reset
+                self.assertEqual(active.read_bytes(), FIRMWARE.data)
+                self.assertEqual(journal.read_bytes(), before)
+                self.assertFalse(staged.exists())
+                controller.sendall(b"C")
+                self.assertEqual(controller.recv(1), b"C")
+                self.assertEqual(config(), expected)
+                process.stdin.write(FIRMWARE.config_response())  # current config must not install
+                process.stdin.close()
+                self.assertEqual(process.wait(timeout=2), 0)
+                self.assertFalse(staged.exists())
+            finally:
+                if process.stdin and not process.stdin.closed:
+                    process.stdin.close()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=2)
+                process.stdout.close()
+                controller.close()
 
     def transfer(self, output, *, expected=DEVICE, mutate_host=lambda line: line,
                  mutate_device=lambda line: line, error=None):

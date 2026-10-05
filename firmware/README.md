@@ -168,7 +168,7 @@ devenv test
 devenv tasks run firmware:build
 ```
 
-The candidate firmware is `dist/ha_x2d-0.6.0-rc1-yd-rp2040-4mb.uf2`.
+The candidate firmware is `dist/ha_x2d-0.6.0-rc2-yd-rp2040-4mb.uf2`.
 It includes the complete native MySensors lifecycle: adding, confirming, disabling,
 replacing and retiring shutters at runtime. No private suffix, compiled slot or
 counter flag is needed. Boot and USB reconnection transmit nothing. Its public

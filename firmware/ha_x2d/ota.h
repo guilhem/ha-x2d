@@ -9,14 +9,20 @@
 // Wire integers are little endian; stream payloads are hexadecimal text.
 namespace x2d::ota {
 
-constexpr uint16_t FIRMWARE_TYPE = 0x5832, VERSION = 6;
+constexpr uint16_t FIRMWARE_TYPE = 0x5832, VERSION = 7, BOOTLOADER_VERSION = 1;
 constexpr size_t BLOCK_BYTES = 16;
+constexpr size_t IMAGE_ALIGNMENT = 128;
 constexpr uint32_t APPLICATION_OFFSET = 0x3000;
 constexpr uint32_t MAX_BLOCKS = 65535;
 constexpr uint32_t RETRY_MS = 500;
 constexpr uint8_t MAX_ATTEMPTS = 5;
 constexpr uint8_t CONFIG_REQUEST = 0, CONFIG_RESPONSE = 1,
                   BLOCK_REQUEST = 2, BLOCK_RESPONSE = 3;
+
+struct FirmwareConfig {
+  uint16_t type = FIRMWARE_TYPE, version = VERSION, blocks = 0, crc = 0,
+           bootloader_version = BOOTLOADER_VERSION;
+};
 
 // begin() receives the padded image length; every write() is one sequential
 // 16-byte block. finish() must read back, validate the board's image format and
@@ -25,9 +31,10 @@ constexpr uint8_t CONFIG_REQUEST = 0, CONFIG_RESPONSE = 1,
 class Storage {
  public:
   virtual ~Storage() = default;
+  virtual FirmwareConfig running_config() const = 0;
   virtual bool begin(uint32_t bytes) = 0;
   virtual bool write(const uint8_t *block, size_t length) = 0;
-  virtual bool finish(uint16_t crc) = 0;
+  virtual bool finish(uint16_t crc, uint16_t version) = 0;
   virtual void abort() = 0;
 };
 
@@ -105,7 +112,7 @@ template<class Host> class Receiver {
       else request(now);
     } else if (state_ == State::verifying) {
       if (crc_ != expected_crc_) { fail("crc"); return; }
-      if (!storage_->finish(expected_crc_)) { fail("image"); return; }
+      if (!storage_->finish(expected_crc_, version_)) { fail("image"); return; }
       // Commit precedes notification. A lost USB/output after here cannot
       // revoke the boot command, unpause RF or prevent the board's fallback.
       state_ = State::committed;
@@ -161,6 +168,11 @@ template<class Host> class Receiver {
       else if (state_ == State::receiving) emit_request();
       return;
     }
+    const auto running = storage_->running_config();
+    // A host answering our announcement with the active identity permits
+    // normal boot/presentation; it must never mount or rewrite staging.
+    if (version == running.version && blocks == running.blocks && crc == running.crc) return;
+    if (uint32_t{blocks} * BLOCK_BYTES % IMAGE_ALIGNMENT) { fail("alignment"); return; }
     version_ = version;
     blocks_ = blocks;
     expected_crc_ = crc;

@@ -34,7 +34,7 @@ struct Radio {
 
 struct Policy {
   uint32_t random_u32() { return 42; }
-  const char *firmware() { return "0.6.0-rc1"; }
+  const char *firmware() { return "0.6.0-rc2"; }
 };
 
 void put_u32(uint8_t *bytes, uint32_t value) {
@@ -43,7 +43,7 @@ void put_u32(uint8_t *bytes, uint32_t value) {
 // Synthetic board image: a known immutable prefix, valid application vectors,
 // marker, arbitrary code and FF padding. The simulated storage runs the actual
 // portable ImageVerifier on readback; no physical flash operation is validated.
-std::vector<uint8_t> image() {
+std::vector<uint8_t> image(uint16_t version = ota::VERSION) {
   std::vector<uint8_t> bytes(ota::APPLICATION_OFFSET + 69, 0xFF);
   for (size_t i = 0; i < ota::APPLICATION_OFFSET; ++i)
     bytes[i] = static_cast<uint8_t>(i * 37 + 11);
@@ -52,7 +52,11 @@ std::vector<uint8_t> image() {
   for (size_t i = ota::APPLICATION_OFFSET + 8; i < bytes.size(); ++i)
     bytes[i] = static_cast<uint8_t>(i * 13 + 7);
   memcpy(bytes.data() + ota::APPLICATION_OFFSET + 40, ota::IMAGE_MARKER, sizeof(ota::IMAGE_MARKER) - 1);
-  bytes.resize((bytes.size() + 15) / 16 * 16, 0xFF);
+  char identity[7];
+  snprintf(identity, sizeof(identity), "%u:", version);
+  memcpy(bytes.data() + ota::APPLICATION_OFFSET + 40 + sizeof(ota::IMAGE_MARKER) - 1,
+         identity, strlen(identity));
+  bytes.resize(ota::padded_image_size(bytes.size()), 0xFF);
   return bytes;
 }
 
@@ -63,6 +67,10 @@ struct Storage final : ota::Storage {
   bool committed = false, fail_begin = false, fail_write = false, fail_finish = false;
   bool corrupt_readback = false;
   explicit Storage(Radio &r) : radio(r) {}
+  ota::FirmwareConfig running_config() const override {
+    const auto active = image(6);
+    return ota::running_config(active.data(), active.size(), 6);
+  }
   bool begin(uint32_t length) override {
     assert(!radio.running && !committed);
     ++begins;
@@ -77,7 +85,7 @@ struct Storage final : ota::Storage {
     bytes.insert(bytes.end(), block, block + length);
     return true;
   }
-  bool finish(uint16_t crc) override {
+  bool finish(uint16_t crc, uint16_t version) override {
     assert(!radio.running && !committed);
     ++finishes;
     if (corrupt_readback && !bytes.empty()) bytes.back() ^= 1;
@@ -85,7 +93,7 @@ struct Storage final : ota::Storage {
         bytes.size() < ota::APPLICATION_OFFSET + 8)
       return false;
     const auto original = image();
-    ota::ImageVerifier verifier(original.data(), expected, crc);
+    ota::ImageVerifier verifier(original.data(), expected, crc, version);
     for (size_t offset = 0; offset < bytes.size(); offset += 256) {
       const size_t length = std::min(size_t{256}, bytes.size() - offset);
       if (!verifier.add(bytes.data() + offset, length)) return false;
@@ -173,11 +181,11 @@ std::string config(uint16_t version, uint16_t blocks, uint16_t crc, uint16_t typ
   ota::put_u16(bytes + 6, crc);
   return stream(ota::CONFIG_RESPONSE, bytes, sizeof(bytes));
 }
-std::string config(const std::vector<uint8_t> &bytes, uint16_t version = 6) {
+std::string config(const std::vector<uint8_t> &bytes, uint16_t version = 7) {
   return config(version, static_cast<uint16_t>(bytes.size() / 16), ota::crc16(bytes.data(), bytes.size()));
 }
 std::string response(const std::vector<uint8_t> &bytes, uint16_t index,
-                     uint16_t version = 6, uint16_t type = ota::FIRMWARE_TYPE) {
+                     uint16_t version = 7, uint16_t type = ota::FIRMWARE_TYPE) {
   uint8_t block[22];
   ota::put_u16(block, type);
   ota::put_u16(block + 2, version);
@@ -186,7 +194,7 @@ std::string response(const std::vector<uint8_t> &bytes, uint16_t index,
   memcpy(block + 6, bytes.data() + size_t{index} * 16, 16);
   return stream(ota::BLOCK_RESPONSE, block, sizeof(block));
 }
-std::string request(uint16_t index, uint16_t version = 6) {
+std::string request(uint16_t index, uint16_t version = 7) {
   uint8_t bytes[6];
   ota::put_u16(bytes, ota::FIRMWARE_TYPE);
   ota::put_u16(bytes + 2, version);
@@ -217,10 +225,13 @@ void discovery_and_commit() {
   assert(ota::crc16(reinterpret_cast<const uint8_t *>("123456789"), 9) == 0x4B37);
   Rig rig;
   const auto writes = rig.flash.programs();
-  rig.feed("1;255;3;0;13;\n");
-  assert(!rig.gateway.reboot_requested());
   rig.feed("1;255;4;0;0;\r\n", 1);
-  assert(rig.drain() == "1;255;3;0;9;ota_id:0123456789ABCDEF\n1;255;4;0;0;3258060000000000\n");
+  const auto announced = rig.storage.running_config();
+  uint8_t words[10];
+  ota::put_u16(words, announced.type); ota::put_u16(words + 2, announced.version);
+  ota::put_u16(words + 4, announced.blocks); ota::put_u16(words + 6, announced.crc);
+  ota::put_u16(words + 8, announced.bootloader_version);
+  assert(rig.drain() == "1;255;3;0;9;ota_id:0123456789ABCDEF\n" + stream(0, words, 10));
   assert(!rig.gateway.updating() && rig.storage.begins == 0);
   const auto bytes = image();
   assert(bytes.back() == 0xFF);
@@ -249,6 +260,50 @@ void discovery_and_commit() {
   rig.feed("2;1;1;0;29;1\n");
   rig.tick(50001);
   assert(rig.radio.starts == 0);
+}
+
+void active_announcement_and_standard_reboot() {
+  Rig rig;
+  const auto active = image(6);
+  const auto current = rig.storage.running_config();
+  assert(current.version == 6 && current.blocks == active.size() / 16 &&
+         current.crc == ota::crc16(active.data(), active.size()) && current.bootloader_version == 1);
+  uint8_t words[10];
+  ota::put_u16(words, current.type); ota::put_u16(words + 2, current.version);
+  ota::put_u16(words + 4, current.blocks); ota::put_u16(words + 6, current.crc);
+  ota::put_u16(words + 8, current.bootloader_version);
+  const auto announcement = stream(0, words, sizeof(words));
+  rig.gateway.disconnected();
+  rig.gateway.connected();
+  const auto startup = rig.drain();
+  has(startup, announcement);  // emitted before any application presentation
+  for (unsigned step = 0; rig.gateway.presentation_pending(); ++step) {
+    assert(step < 100);
+    rig.tick(step);
+    const auto line = rig.drain();
+    assert(line.find(";255;4;0;0;") == std::string::npos);  // no virtual shutter OTA
+  }
+  rig.feed(config(active, 6));
+  rig.tick(100);
+  assert(!rig.gateway.updating() && rig.storage.begins == 0 && rig.drain().empty());
+  rig.feed("2;255;3;0;19;\n");
+  assert(rig.drain().find(";255;4;0;0;") == std::string::npos);
+  rig.feed("1;255;3;0;19;\n");
+  has(rig.drain(), announcement);
+  for (const auto *invalid : {"0;255;3;0;13;\n", "255;255;3;0;13;\n", "2;255;3;0;13;\n",
+                             "1;1;3;0;13;\n", "1;255;3;1;13;\n", "1;255;3;0;13;1\n"}) {
+    rig.feed(invalid);
+    assert(!rig.gateway.reboot_requested());
+  }
+  rig.feed("2;1;1;0;29;1\n");
+  rig.tick(101);
+  assert(rig.radio.running && rig.next() == 11);
+  rig.feed("2;1;1;0;30;1\n1;255;3;0;13;\n");
+  assert(rig.gateway.reboot_requested() && !rig.gateway.reboot_ready() && rig.radio.stopping);
+  rig.feed(config(image()));  // no staging between reset request and actual reset
+  rig.radio.boundary = true;
+  rig.tick(102);
+  assert(rig.gateway.reboot_ready() && rig.radio.starts == 1 && rig.next() == 11 && rig.storage.begins == 0);
 }
 
 void bounded_retry_and_duplicates() {
@@ -283,31 +338,62 @@ void bounded_retry_and_duplicates() {
   assert(rig.radio.starts == 1 && rig.next() == 11);  // resume only freshly requested RF
 }
 
+void discovery_during_transfer_does_not_advertise_running_image() {
+  Rig rig;
+  const auto bytes = image();
+  offer(rig, bytes);
+  rig.feed(response(bytes, 0));
+  assert(rig.drain() == request(1));
+  const auto begins = rig.storage.begins;
+  // Discovery can still be in flight when the controller serves the first
+  // block. None of these paths may reannounce the old application identity.
+  rig.feed("1;255;3;0;19;\n255;255;3;0;19;\n2;255;3;0;19;\n1;255;4;0;0;\n");
+  rig.tick(10);
+  auto output = rig.drain();
+  assert(output.find(";255;4;0;0;") == std::string::npos);
+  assert(output.find("ota_error:") == std::string::npos);
+  assert(rig.gateway.updating() && rig.storage.writes == 1 && rig.storage.begins == begins);
+  for (uint16_t index = 1; index < bytes.size() / 16; ++index) {
+    rig.feed(response(bytes, index));
+    output = rig.drain();
+    if (size_t{index} + 1 < bytes.size() / 16) assert(output == request(index + 1));
+    else assert(output.empty());
+  }
+  rig.tick(11);
+  assert(rig.gateway.ota_committed() && rig.storage.aborts == 0 && rig.storage.begins == begins);
+  assert(rig.drain() == "1;255;3;0;9;ota_staged\n");
+  rig.feed("1;255;3;0;19;\n1;255;4;0;0;\n");
+  assert(rig.drain().empty());
+  rig.gateway.disconnected();
+  rig.gateway.connected();  // a USB reopen before reset still runs the old app
+  assert(rig.drain().find(";255;4;0;0;") == std::string::npos);
+}
+
 void wire_bounds() {
   Rig rig;
-  rig.feed(config(0xFFFF, static_cast<uint16_t>(ota::MAX_BLOCKS), 0x1234));
+  rig.feed(config(0xFFFF, static_cast<uint16_t>(ota::MAX_BLOCKS / 8 * 8), 0x1234));
   rig.tick(0);
-  assert(rig.storage.expected == 1048560);
+  assert(rig.storage.expected == 1048448);
   assert(rig.drain() == request(0, 0xFFFF));
   rig.gateway.disconnected();
   assert(rig.storage.aborts == 1);
 
-  // Exercise the final uint16_t index too: the receiver must stop requesting
-  // at block 65534, without wrapping or emitting an extra request at 65535.
+  // Exercise the largest canonical image: 65528 blocks stop at index 65527,
+  // with no wrapping or extra block request after completion.
   Rig largest;
   auto bytes = image();
-  bytes.resize(ota::MAX_BLOCKS * ota::BLOCK_BYTES, 0xFF);
+  bytes.resize(ota::MAX_BLOCKS / 8 * 8 * ota::BLOCK_BYTES, 0xFF);
   offer(largest, bytes);
   transfer(largest, bytes);
   largest.tick(1);
-  assert(largest.gateway.ota_committed() && largest.storage.writes == ota::MAX_BLOCKS);
+  assert(largest.gateway.ota_committed() && largest.storage.writes == ota::MAX_BLOCKS / 8 * 8);
   assert(largest.drain() == "1;255;3;0;9;ota_staged\n");
 }
 
 void malformed_and_unrequested() {
   const auto bytes = image();
   for (const std::string &bad : {
-       config(6, 0, 0), config(6, 768, 0), config(6, 773, 0, 0x1234),
+       config(7, 0, 0), config(7, 768, 0), config(7, 776, 0, 0x1234),
        std::string("1;255;4;0;1;32580600\n"), response(bytes, 0),
        std::string("1;255;4;0;2;325806000000\n")}) {
     Rig rig;
@@ -323,10 +409,10 @@ void malformed_and_unrequested() {
   assert(!unavailable.gateway.updating());
 
   for (const std::string &bad : {
-       response(bytes, 1), response(bytes, 0, 7), response(bytes, 0, 6, 0x1234),
+       response(bytes, 1), response(bytes, 0, 8), response(bytes, 0, 7, 0x1234),
        std::string("1;255;4;0;3;325806000000FFFF\n"),
        std::string("1;255;4;0;3;325806000000ZZ\n"),
-       config(6, 773, 3), config(7, 773, 0), config(6, 0, 0)}) {
+       config(7, 776, 3), config(8, 776, 0), config(7, 0, 0)}) {
     Rig rig;
     offer(rig, bytes);
     rig.feed(bad);
@@ -347,14 +433,15 @@ void malformed_and_unrequested() {
 }
 
 void crc_and_storage_validation() {
-  for (unsigned fault = 0; fault < 7; ++fault) {
+  for (unsigned fault = 0; fault < 8; ++fault) {
     Rig rig;
     auto bytes = image();
     if (fault == 1) bytes[0] ^= 1;  // valid wire CRC, wrong bootloader prefix
     if (fault == 2) put_u32(bytes.data() + ota::APPLICATION_OFFSET, 0xFFFFFFFF);
     if (fault == 3) put_u32(bytes.data() + ota::APPLICATION_OFFSET + 4, 0x10003020);
-    if (fault == 4) bytes.resize(ota::APPLICATION_OFFSET + 16);  // reset vector points beyond a truncated image
+    if (fault == 4) put_u32(bytes.data() + ota::APPLICATION_OFFSET + 4, ota::FLASH_BASE + bytes.size() + 1);  // reset vector points beyond a truncated image
     if (fault == 6) memset(bytes.data() + ota::APPLICATION_OFFSET + 40, 0xFF, sizeof(ota::IMAGE_MARKER) - 1);
+    if (fault == 7) bytes[ota::APPLICATION_OFFSET + 40 + sizeof(ota::IMAGE_MARKER) - 1] = '8';
     rig.storage.corrupt_readback = fault == 5;
     offer(rig, bytes);
     if (fault == 0) bytes.back() ^= 1;  // block corruption, config CRC unchanged
@@ -500,6 +587,8 @@ void slow_host_and_commit_output_failure() {
 }  // namespace
 
 int main() {
+  discovery_during_transfer_does_not_advertise_running_image();
+  active_announcement_and_standard_reboot();
   discovery_and_commit();
   bounded_retry_and_duplicates();
   wire_bounds();

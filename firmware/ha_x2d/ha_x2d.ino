@@ -130,11 +130,11 @@ class RadioOutput {
 // entropy and the displayed firmware version belong in this adapter.
 // Referenced as the sketch version so linker GC retains the complete product
 // marker in every OTA-capable image (diagnostic sketches have no such marker).
-const char FIRMWARE_ID[] = "HA-X2D YD-RP2040 OTA/1:0.6.0-rc1";
+const char FIRMWARE_ID[] = "HA-X2D YD-RP2040 OTA/1:7:0.6.0-rc2";
 struct Policy {
   uint32_t random_u32() { return rp2040.hwrand32(); }
   const char* firmware() {
-    return FIRMWARE_ID + sizeof(x2d::ota::IMAGE_MARKER) - 1;
+    return strchr(FIRMWARE_ID + sizeof(x2d::ota::IMAGE_MARKER) - 1, ':') + 1;
   }
 } policy;
 
@@ -155,6 +155,7 @@ void flush_output() {
 }  // namespace
 
 void setup() {
+  ota_storage.initialize_running_config();
   pico_unique_board_id_t board_id;
   pico_get_unique_board_id(&board_id);
   hex_id(board_id.id, device_id);
@@ -215,4 +216,5 @@ void loop() {
       rp2040.reboot();
     }
   }
+  if (!gateway->ota_committed() && gateway->reboot_ready()) rp2040.reboot();
 }

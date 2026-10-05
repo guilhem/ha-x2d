@@ -2,8 +2,8 @@
 import argparse
 from pathlib import Path
 import subprocess
-from firmware_layout import FLASH_LENGTH, validate_binary
-from check_uf2_layout import check
+from firmware_layout import FLASH_LENGTH, IMAGE_ALIGNMENT, MAX_IMAGE_SIZE, image_version, validate_binary
+from check_uf2_layout import check, check_binary, canonicalize
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,9 +24,23 @@ def main():
     command += [str(ROOT / "firmware" / args.sketch)]
     subprocess.run(command, check=True)
     image = output / f"{args.sketch}.ino"
-    check(image.with_suffix(".ino.uf2").read_bytes())
+    uf2 = image.with_suffix(".ino.uf2")
+    binary = image.with_suffix(".ino.bin")
+    raw = binary.read_bytes()
     if args.sketch == "ha_x2d":
-        validate_binary(image.with_suffix(".ino.bin").read_bytes())
+        padded = validate_binary(raw)
+        image_version(padded)
+    else:
+        padded = raw + b"\xff" * (-len(raw) % IMAGE_ALIGNMENT)
+        if len(padded) > MAX_IMAGE_SIZE:
+            raise ValueError("Diagnostic image exceeds the image size bound")
+    # The core converter pads its final UF2 payload with zeroes. Canonicalize
+    # that tail BEFORE padding BIN, so FF padding is identical on both paths.
+    canonical_uf2 = canonicalize(uf2.read_bytes(), raw)
+    check_binary(canonical_uf2, padded)
+    binary.write_bytes(padded)
+    uf2.write_bytes(canonical_uf2)
+    check(canonical_uf2)
     print("OK: firmware images protect the journal and match the selected layout")
 
 

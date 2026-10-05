@@ -2,7 +2,7 @@
 """Stage a whole Arduino-Pico .bin over the X2D native MySensors USB port.
 
 Usage: uv run tools/update_firmware.py /dev/ttyACM0 firmware.bin \
-    --version 5 --device-id 0123456789ABCDEF
+    --version 7 --device-id 0123456789ABCDEF
 
 Stop Home Assistant's MySensors integration and other serial clients first.
 The device ID prevents accidental targeting; it is not authentication.
@@ -80,10 +80,12 @@ class Firmware:
             raise ValueError(f"binary size must be > {APP_OFFSET} and <= {MAX_IMAGE_SIZE} bytes")
         # The shared image validator owns partition map, vector and board checks.
         if __package__:
-            from .firmware_layout import validate_binary
+            from .firmware_layout import image_version, validate_binary
         else:
-            from firmware_layout import validate_binary
+            from firmware_layout import image_version, validate_binary
         data = validate_binary(data)
+        if image_version(data) != version:
+            raise ValueError("version does not match the compiled image identity")
         return cls(data, version, crc16(data))
 
     @property
@@ -215,7 +217,10 @@ def stage_firmware(transport, firmware, expected_device_id, *, discovery_timeout
                     send(REBOOT_RECEIPT, staged=True)
                     return len(served)
             elif command == C_STREAM and subtype == ST_CONFIG_REQUEST:
-                kind, _, _, _ = unpack_hex(payload, 4)
+                # Four words exist only on the old running gateway: retain
+                # this migration entrypoint for its one-time standard upgrade.
+                words = 5 if len(payload) == 20 else 4
+                kind, *_ = unpack_hex(payload, words)
                 if kind != FIRMWARE_TYPE:
                     raise UpdateError("Current firmware type is not X2D (0x5832)")
                 config_received = True
@@ -293,7 +298,7 @@ def main(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("serial_path", help="local USB serial path (for example /dev/ttyACM0)")
     parser.add_argument("binary", type=Path, help="whole Arduino-Pico .bin, including bootloader/partition prefix")
-    parser.add_argument("--version", type=int, required=True, help="firmware wire version (0..65535; 0.6.0 uses 6)")
+    parser.add_argument("--version", type=int, required=True, help="compiled firmware wire version (0.6.0-rc2 uses 7)")
     parser.add_argument("--device-id", required=True, help="expected board ID: exactly 16 hex digits")
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--discovery-timeout", type=float, default=10)

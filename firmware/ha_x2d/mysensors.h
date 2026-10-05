@@ -62,7 +62,7 @@ template<class Radio, class Policy> class Gateway {
  public:
   Gateway(journal::Journal &journal, Radio &radio, Policy &policy, const char *device_id,
           ota::Storage *storage = nullptr)
-      : journal_(journal), policy_(policy), controller_(journal, radio, *this), ota_(storage, *this) {
+      : journal_(journal), policy_(policy), controller_(journal, radio, *this), storage_(storage), ota_(storage, *this) {
     invalid_ = !hex16(device_id);
     if (!invalid_) memcpy(device_id_, device_id, sizeof(device_id_));
   }
@@ -74,6 +74,7 @@ template<class Radio, class Policy> class Gateway {
     connected_ = true;
     if (!updating()) controller_.resume();
     send(0, SYSTEM, INTERNAL, 0, I_GATEWAY_READY, "Gateway startup complete.");
+    announce_config();
     present();
   }
   void disconnected() {
@@ -97,7 +98,7 @@ template<class Radio, class Policy> class Gateway {
     }
     controller_.tick(now);
     ota_.tick(now, connected_ && !failed());
-    if (!connected_ || failed() || ota_committed()) return;
+    if (!connected_ || failed() || ota_committed() || reboot_requested_) return;
     // Reserve room for a complete state snapshot and a command receipt. A slow
     // reader defers discovery; malformed/request floods still fail closed.
     if (OutputBuffer::CAPACITY - output_.size() < SNAPSHOT_HEADROOM) return;
@@ -124,7 +125,8 @@ template<class Radio, class Policy> class Gateway {
   bool failed() const { return invalid_ || failed_; }
   bool updating() const { return ota_.updating(); }
   bool ota_committed() const { return ota_.committed(); }
-  bool reboot_requested() const { return ota_committed() && reboot_requested_; }
+  bool reboot_requested() const { return reboot_requested_; }
+  bool reboot_ready() const { return reboot_requested_ && !controller_.busy(); }
   bool presentation_pending() const {
     return presentation_ || updates_ || discoveries_ || heartbeats_ || present_slot_ != SYSTEM;
   }
@@ -169,6 +171,25 @@ template<class Radio, class Policy> class Gateway {
   void ota_pause() { controller_.pause("ota_busy"); }
   void ota_resume() { if (connected_ && !failed()) { controller_.resume(); present(); } }
   bool ota_quiescent() const { return !controller_.busy(); }
+  void announce_config() {
+    // Late discovery/probes must not insert the old image identity into an
+    // active transfer or confirmation. Only an idle application announces.
+    if (!storage_ || updating() || reboot_requested_) return;
+    const auto config = storage_->running_config();
+    if (!config.blocks) return;
+    char id[PAYLOAD_BYTES + 1];
+    snprintf(id, sizeof(id), "ota_id:%s", device_id_);
+    if (!ota_log(id)) return;
+    uint8_t bytes[10];
+    ota::put_u16(bytes, config.type);
+    ota::put_u16(bytes + 2, config.version);
+    ota::put_u16(bytes + 4, config.blocks);
+    ota::put_u16(bytes + 6, config.crc);
+    ota::put_u16(bytes + 8, config.bootloader_version);
+    char text[21];
+    ota::encode_hex(bytes, sizeof(bytes), text);
+    ota_stream(ota::CONFIG_REQUEST, text);
+  }
 
   static const char *cause(std::string_view reason) {
     if (reason == "ready" || reason == "initialized") return "Pret";
@@ -376,28 +397,28 @@ template<class Radio, class Policy> class Gateway {
   }
   void dispatch_message(const Message &m) {
     if (m.node == NODE && m.child == SYSTEM && m.command == STREAM) {
+      if (m.echo || (reboot_requested_ && !ota_committed())) return;
       if (m.type == ota::CONFIG_REQUEST && !*m.payload) {
-        char id[PAYLOAD_BYTES + 1];
-        snprintf(id, sizeof(id), "ota_id:%s", device_id_);
-        if (!ota_log(id)) return;
-        uint8_t bytes[8]{};
-        ota::put_u16(bytes, ota::FIRMWARE_TYPE);
-        ota::put_u16(bytes + 2, ota::VERSION);
-        char config[17];
-        ota::encode_hex(bytes, sizeof(bytes), config);
-        ota_stream(ota::CONFIG_REQUEST, config);
+        announce_config();
       } else ota_.receive(m.type, m.payload, now_);
       return;
     }
     if (m.command == INTERNAL && m.child == SYSTEM && owned_mask(m.node)) {
       if (m.type == I_VERSION) send(m.node == SYSTEM ? NODE : m.node, SYSTEM, INTERNAL, 0, I_VERSION, "2.3.2");
-      else if (m.type == I_REBOOT && m.node == NODE && !*m.payload && ota_committed()) reboot_requested_ = true;
+      else if (m.type == I_REBOOT && m.node == NODE && !m.echo && !*m.payload &&
+               (!updating() || ota_committed())) {
+        reboot_requested_ = true;
+        ota_pause();
+      }
       else if (m.type == I_DISCOVER) discoveries_ |= owned_mask(m.node);
-      else if (m.type == I_PRESENTATION) present(m.node);
+      else if (m.type == I_PRESENTATION) {
+        if (!m.echo && (owned_mask(m.node) & 1)) announce_config();
+        present(m.node);
+      }
       else if (m.type == I_HEARTBEAT_REQUEST) heartbeats_ |= owned_mask(m.node);
       return;
     }
-    if (m.command != REQ && m.command != SET) return;
+    if (reboot_requested_ || (m.command != REQ && m.command != SET)) return;
     const uint8_t slot = m.node == NODE ? 0 : slot_for(m.node);
     if (m.node != NODE && !slot) { status("unknown_node", 0); return; }
     const bool manager_switch = m.node == NODE && (m.child == ADD || m.child == INITIALIZE);
@@ -475,6 +496,7 @@ template<class Radio, class Policy> class Gateway {
   journal::Journal &journal_;
   Policy &policy_;
   Controller<Radio, Gateway> controller_;
+  ota::Storage *storage_;
   ota::Receiver<Gateway> ota_;
   LineFramer input_{LINE_BYTES};
   OutputBuffer output_;
