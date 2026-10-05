@@ -73,6 +73,14 @@ New enrollment requires an explicitly authorized **experimental trial build**.
 The standard build does not enable it. Its suffix, initial counter and allowed
 retry still need qualification on the target motor.
 
+`N:pair_unqualified` means the selected slot is outside the compiled trial's
+authorization. For a second shutter, the private firmware must authorize slot 2
+with `HA_X2D_TRIAL_SLOT=2`, as described in the
+[supervised enrollment guide](../firmware/README.md#supervised-enrollment).
+The button selects the unique pending or first unused slot; it cannot change
+this firmware authorization. Existing paired shutters retain their identities
+and counters when updating with the same flash layout.
+
 1. Put the motor into its manufacturer-documented pairing mode under supervision.
 2. Press **Pair shutter** once. The dongle resumes its unique pending slot or
    selects the first unused slot. It persists a new identity and reserves both
