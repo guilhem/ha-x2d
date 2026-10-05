@@ -67,12 +67,11 @@ in
       description = "Build the standard gateway UF2 while protecting its reserved journal";
       exec = ''
         cd "${config.devenv.root}"
-        arduino-cli compile --profile yd-rp2040-4mb-journal \
-          --output-dir build/firmware firmware/ha_x2d
-        python tools/check_uf2_layout.py build/firmware/ha_x2d.ino.uf2
+        python tools/build_firmware.py --output-dir build/firmware
         mkdir -p dist
         cp build/firmware/ha_x2d.ino.uf2 \
-          dist/ha_x2d-0.4.1-yd-rp2040-4mb.uf2
+          dist/ha_x2d-0.6.0-rc2-yd-rp2040-4mb.uf2
+        cp build/firmware/ha_x2d.ino.bin dist/ha_x2d-0.6.0-rc2-yd-rp2040-4mb.bin
       '';
     };
 
@@ -80,9 +79,7 @@ in
       description = "Build the passive PIO/DMA receiver with the same protected flash layout";
       exec = ''
         cd "${config.devenv.root}"
-        arduino-cli compile --profile yd-rp2040-4mb-journal \
-          --output-dir build/rx-debug firmware/rx_debug
-        python tools/check_uf2_layout.py build/rx-debug/rx_debug.ino.uf2
+        python tools/build_firmware.py rx_debug --output-dir build/rx-debug
       '';
     };
 
@@ -90,9 +87,7 @@ in
       description = "Build the digital PIO loopback check with CC1101 kept in IDLE";
       exec = ''
         cd "${config.devenv.root}"
-        arduino-cli compile --profile yd-rp2040-4mb-journal \
-          --output-dir build/tx-check firmware/tx_check
-        python tools/check_uf2_layout.py build/tx-check/tx_check.ino.uf2
+        python tools/build_firmware.py tx_check --output-dir build/tx-check
       '';
     };
   };

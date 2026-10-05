@@ -9,6 +9,7 @@
 
 #include <x2d/cc1101.h>
 #include "mysensors.h"
+#include "ota_storage.h"
 #include <x2d/journal.h>
 #include "radio_bus.h"
 #include "radio_tx.h"
@@ -26,35 +27,17 @@ constexpr uint8_t PIN_CS = 17;
 constexpr uint8_t PIN_SCK = 18;
 constexpr uint8_t PIN_MOSI = 19;
 
-// Standard builds transmit commands for identities already paired in the
-// journal; new enrollment remains a separately authorized supervised trial.
-#ifndef HA_X2D_SUPERVISED_TX
-#define HA_X2D_SUPERVISED_TX 0
-#endif
-static_assert(HA_X2D_SUPERVISED_TX == 0 || HA_X2D_SUPERVISED_TX == 1,
-              "supervised TX must be 0 or 1");
-#if HA_X2D_SUPERVISED_TX && !defined(HA_X2D_TRIAL_SUFFIX)
-#error "Set the private observed identity suffix for this supervised trial"
-#endif
-#ifndef HA_X2D_TRIAL_SUFFIX
-#define HA_X2D_TRIAL_SUFFIX 0
-#endif
-static_assert(HA_X2D_TRIAL_SUFFIX >= 0 && HA_X2D_TRIAL_SUFFIX <= 255,
-              "trial identity suffix must be one byte");
-#ifndef HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER
-#define HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER 0
-#endif
-static_assert(HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER == 0 ||
-              HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER == 2,
-              "trial expected next counter must be 0 or 2");
-constexpr bool ENROLLMENT_ENABLED = HA_X2D_SUPERVISED_TX;
+// Public candidate for the demonstrated enrollment waveform. The release
+// candidate still needs a physical association and command cycle on the motors.
+// Runtime MySensors operations grant bounded attempts; no per-shutter build.
+constexpr x2d::EnrollmentProfile ENROLLMENT_PROFILE{0x01};
 
 class BoardFlash final : public x2d::journal::Flash {
  public:
-  static constexpr uintptr_t ADDRESS = 0x101FF000;
+  static constexpr uintptr_t ADDRESS = x2d::ota::JOURNAL_ADDRESS;
   uint32_t size() const override {
-    return reinterpret_cast<uintptr_t>(&_FS_start) == ADDRESS &&
-           reinterpret_cast<uintptr_t>(&_FS_end) >= ADDRESS + x2d::journal::REGION_BYTES
+    return x2d::rp2040::valid_layout() &&
+           ADDRESS + x2d::journal::REGION_BYTES == x2d::ota::STAGING_START
                ? x2d::journal::REGION_BYTES : 0;
   }
   bool read(uint32_t offset, void* out, uint32_t length) override {
@@ -145,14 +128,18 @@ class RadioOutput {
 
 // Runtime and association policy live in the shared controller. Only board
 // entropy and the displayed firmware version belong in this adapter.
+// Referenced as the sketch version so linker GC retains the complete product
+// marker in every OTA-capable image (diagnostic sketches have no such marker).
+const char FIRMWARE_ID[] = "HA-X2D YD-RP2040 OTA/1:7:0.6.0-rc2";
 struct Policy {
   uint32_t random_u32() { return rp2040.hwrand32(); }
   const char* firmware() {
-    return HA_X2D_SUPERVISED_TX ? "0.4.1-trial" : "0.4.1";
+    return strchr(FIRMWARE_ID + sizeof(x2d::ota::IMAGE_MARKER) - 1, ':') + 1;
   }
 } policy;
 
 using Gateway = x2d::mysensors::Gateway<RadioOutput, Policy>;
+x2d::rp2040::OTAStorage ota_storage;
 std::optional<Gateway> gateway;  // identity exists only after boot
 char rx[256];                    // one small USB window; the gateway frames lines
 size_t rx_used = 0, rx_pos = 0;
@@ -168,6 +155,7 @@ void flush_output() {
 }  // namespace
 
 void setup() {
+  ota_storage.initialize_running_config();
   pico_unique_board_id_t board_id;
   pico_get_unique_board_id(&board_id);
   hex_id(board_id.id, device_id);
@@ -188,12 +176,9 @@ void setup() {
   SPI.begin();
   radio.reset();  // CC1101 manual reset; no frequency or transmit registers are set
   radio.configure_transmitter();  // verifies the profile while remaining in IDLE
-  gateway.emplace(journal, radio_output, policy, device_id);
-  const x2d::PairingAuthorization trial{
-      HA_X2D_SUPERVISED_TX ? uint8_t{1} : uint8_t{0},
-      HA_X2D_TRIAL_SUFFIX, HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER};
-  gateway->begin(true, ENROLLMENT_ENABLED,
-                 x2d::radio::digital_tx::DEFAULT_CHIP_NS, trial);
+  gateway.emplace(journal, radio_output, policy, device_id, &ota_storage);
+  gateway->begin(true, true,
+                 x2d::radio::digital_tx::DEFAULT_CHIP_NS, ENROLLMENT_PROFILE);
 }
 
 void loop() {
@@ -220,4 +205,16 @@ void loop() {
   // ACK is queued before the runtime can produce its first terminal event.
   gateway->tick(millis());
   radio_output.service();
+  // Once a boot command is committed, connection loss cannot cancel it. Give
+  // the host up to 3s to acknowledge receipt of ota_staged. An empty gateway
+  // buffer only proves bytes entered USB, not that the host received them.
+  static bool committed = false;
+  static uint32_t committed_at = 0;
+  if (gateway->ota_committed()) {
+    if (!committed) { committed = true; committed_at = millis(); }
+    if (gateway->reboot_requested() || millis() - committed_at >= 3000) {
+      rp2040.reboot();
+    }
+  }
+  if (!gateway->ota_committed() && gateway->reboot_ready()) rp2040.reboot();
 }

@@ -5,7 +5,7 @@ enable_testing()
 set(X2D_BUILD_TESTING ON CACHE BOOL "Run the shared core checks alongside the dongle checks")
 add_subdirectory(lib/x2d-core)
 
-foreach(check IN ITEMS serial mysensors)
+foreach(check IN ITEMS serial mysensors ota image_layout)
   add_executable(check_${check} firmware/check_${check}.cpp)
   target_link_libraries(check_${check} PRIVATE x2d::core)
   target_include_directories(check_${check} PRIVATE firmware/ha_x2d)

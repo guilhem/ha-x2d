@@ -16,9 +16,7 @@ Compiler avec le même profil et cache que le diagnostic :
 
 ```sh
 devenv shell
-arduino-cli compile --profile yd-rp2040-4mb-journal \
-  --build-path "$PWD/build/rx-debug/build" --output-dir "$PWD/build/rx-debug" \
-  firmware/rx_debug
+python tools/build_firmware.py rx_debug --output-dir build/rx-debug
 g++ -std=c++17 -Wall -Wextra -Werror \
   -I.devenv/state/arduino/data/internal/ArduinoJson_7.4.3_65bbd090d30b7927/ArduinoJson/src \
   -Ilib/x2d-core/src firmware/check_rx_debug.cpp -o build/rx-debug/check_rx_debug
@@ -170,65 +168,53 @@ devenv test
 devenv tasks run firmware:build
 ```
 
-The standard **0.4.1** firmware is `dist/ha_x2d-0.4.1-yd-rp2040-4mb.uf2`.
-It enables open, close and STOP for paired shutters by default and refuses new
-association/confirmation. The radio stays in IDLE until an explicit command;
-boot and USB reconnection transmit nothing. A failed radio configuration still
-refuses emission. No build task flashes hardware; RF qualification remains a
-separate hardware step.
+The candidate firmware is `dist/ha_x2d-0.6.0-rc2-yd-rp2040-4mb.uf2`.
+It includes the complete native MySensors lifecycle: adding, confirming, disabling,
+replacing and retiring shutters at runtime. No private suffix, compiled slot or
+counter flag is needed. Boot and USB reconnection transmit nothing. Its public
+suffix `0x01` remains an unqualified hardware candidate.
 
-The **yd-rp2040-4mb-journal** profile fixes Arduino-Pico **6.1.1** and the physical
-4 MiB board's linker reservation. Its raw **64 KiB** journal starts at
-**0x101FF000** (`_FS_start`), inside the reserved 2 MiB filesystem region. The
-firmware checks this mapping, never mounts LittleFS and never formats corruption.
-Every firmware update must preserve it. Validate the exact UF2 before copying
-it to the board in BOOTSEL mode:
+The **yd-rp2040-4mb-ota** profile pins Arduino-Pico **6.1.1**. Always use
+`tools/build_firmware.py` (or devenv tasks), which checks the actual UF2/binary.
+The **64 KiB** journal remains at **0x101EF000**, before LittleFS staging. The
+layout, bootloader and OTA boundaries are unchanged from 0.5.0. Wrong reservations
+block journal access and updates. Follow the [update guide](../docs/FIRMWARE_UPDATE.md).
 
-```sh
-python tools/check_uf2_layout.py build/firmware/ha_x2d.ino.uf2
-```
+A valid old journal requires explicit **Initialiser** on the manager device.
+Its associations/counters are discarded; only RF identity exclusions survive.
+The reset is committed before old records are erased, and no v2 radio operation
+is allowed before that finalization completes. Corrupt/unknown data is never
+silently erased. Existing motors must be associated again through the new flow.
 
-Never use a whole-flash erase tool or a differently partitioned build. A normal
-UF2 update preserves the journal's format, identities and consumed counters.
-The 2 MiB profile is compile-only: storage is incompatible and RF is refused.
+The journal v2 supports reusable physical slots and stable logical devices.
+Replacing a motor keeps its HA device; retiring and adding one allocates a new
+public ID. Each job captures the private radio incarnation, so an old queued
+operation cannot follow a reused slot. RF identities are allocated without
+repetition in the journal's life; consumed counters never roll back.
 
-The shared controller and runtime reserve counters before RF, keep STOP priority,
-maintain storage only at radio idle, and never replay on connection or restart.
-The PIO/DMA burst remains continuous, with a single preamble and preserved phase.
-STOP ends it at a complete frame boundary. The nominal chip duration stays
-**208500 ns** in `radio_tx.h` (`DEFAULT_CHIP_NS`); retain and calibrate this value
-when qualifying hardware. The CC1101 candidate profile remains async OOK at
-868.350 MHz, with register checks before transmission.
+### Runtime association
 
-On USB loss, pending input/output and requests are discarded. The active burst
-stops at its frame boundary and reservations remain consumed. The loop reads
-one bounded request per pass and never blocks on USB writes. An output overflow
-requires reopening USB. Keep the USB link awake as described below.
+Follow [the device-page workflow](../home_assistant/README.md#add-a-shutter).
+Only one candidate exists at once. An explicit initial operation claims one
+0/1 attempt. A separate **Nouvel essai** claims the only 2/3 retry; lost sessions
+never restore emission permits. Human observation of the motor response and an
+idle radio are required before confirmation. The existing two-phase 24-copy
+sequence is preserved. No measured position is inferred from transmitter success.
 
-### Supervised enrollment
+The controller preserves STOP priority, frame-boundary cancellation, idle journal
+maintenance and no automatic replay. The PIO/DMA waveform stays continuous with
+one preamble and a nominal **208500 ns** chip duration. The CC1101 profile is
+async OOK at 868.350 MHz with register checks before transmission. Verify and
+calibrate these parameters during qualification; software tests are not RF proof.
 
-Standard builds have `HA_X2D_SUPERVISED_TX=0`; shutter commands are always enabled.
-An explicitly built private trial with `HA_X2D_SUPERVISED_TX=1` requires
-`HA_X2D_TRIAL_SUFFIX`, the locally observed identity suffix. The current RP2040
-trial is restricted to **slot 1** and is not a generally qualified pairing
-profile. Its firmware version remains suffixed `-trial` (`0.4.1-trial`).
-The shared controller supports 16 slots; that does not authorize new
-RF identities on untested motors.
+On USB loss, pending bytes and requests are discarded, reservations stay consumed,
+and the active burst stops at a full frame boundary. One input line is processed
+per pass. Presentations are incremental so 16 devices do not fill the 4096-byte
+response buffer. An actual overflow closes admission until USB is reopened.
 
-`HA_X2D_TRIAL_EXPECTED_NEXT_COUNTER` permits only **0** (one 0/1 attempt) or **2**
-(one explicitly authorized 2/3 resume). Consumed counters never become reusable
-on reboot. The identity seed remains the supervised hypothesis 0. Each attempt
-requires a fresh ON of MySensors child 17 and emits the existing two-phase
-24-copy sequence. Never distribute a private trial build as a qualified release.
-No motor response means no confirmation. Only human observation authorizes ON
-of child 18, after the radio is idle; the cover then appears without restarting.
-Confirmation can resume after power loss in the same authorized trial build.
-
-See [OBSERVATIONS_RADIO.md](../docs/OBSERVATIONS_RADIO.md) for radio captures.
-Initial association, reset/watchdog carrier-off,
-USB unplugging and STOP latency must be measured with this firmware on hardware.
-Use a 10 kΩ GDO0 pull-down to keep the data input low during reset and verify the
-actual carrier-off behavior; firmware reinitializes the CC1101 at startup.
+See [OBSERVATIONS_RADIO.md](../docs/OBSERVATIONS_RADIO.md) for earlier evidence.
+Qualify the public profile, physical STOP, unplugging, and reset/watchdog carrier
+off on the board. Keep the GDO0 10 kΩ pull-down and verify carrier suppression.
 
 ## Wiring
 

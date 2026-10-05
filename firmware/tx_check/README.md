@@ -49,11 +49,7 @@ Build and verify the reserved journal layout, without flashing:
 
 ```sh
 devenv shell
-arduino-cli compile --profile yd-rp2040-4mb-journal --warnings all \
-  --build-property compiler.cpp.extra_flags=-Werror \
-  --build-path /tmp/ha-x2d-tx-check-build \
-  --output-dir /tmp/ha-x2d-tx-check-output firmware/tx_check
-python tools/check_uf2_layout.py /tmp/ha-x2d-tx-check-output/tx_check.ino.uf2
+python tools/build_firmware.py tx_check --cpp-flags=-Werror --output-dir build/tx-check
 g++ -std=c++17 -O2 -Wall -Wextra -Werror \
   -Ilib/x2d-core/src firmware/tx_check/check_capture.cpp -o /tmp/check_tx_capture
 /tmp/check_tx_capture
